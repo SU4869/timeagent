@@ -1445,7 +1445,7 @@
           Store.state.apiModel = "deepseek-ai/DeepSeek-V3";
         } else if (p === "deepseek") {
           Store.state.apiBase = "/api/deepseek";
-          Store.state.apiModel = "deepseek-chat";
+          Store.state.apiModel = "deepseek-v4-flash";
         }
         const kb2 = $("#apiBaseInput"); if (kb2) kb2.value = Store.state.apiBase;
         const km2 = $("#apiModelInput"); if (km2) km2.value = Store.state.apiModel;
