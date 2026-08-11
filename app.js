@@ -810,7 +810,6 @@
      页面路由 + 视图渲染
      ============================================================ */
   const view = $("#view");
-  const fab = $("#fab");
   let currentTab = 0;
   const freshTimers = new Set();
 
@@ -820,7 +819,6 @@
       t.classList.toggle("active", i === idx);
       t.classList.toggle("has-badge", i === 0 && hasFresh());
     });
-    fab.classList.add("hidden"); // FAB 已下线（方案B：只保留聊天舱入口）
     view.scrollTop = 0;
     renderCurrent();
   }
@@ -2386,7 +2384,6 @@
      ============================================================ */
   let chatDraft = null;
   function openChat() {
-    fab.classList.add("hidden");
     const layer = document.createElement("div");
     layer.id = "chatLayer";
     layer.style.cssText =
@@ -2849,15 +2846,6 @@
       .join("");
   }
 
-  function initStatusBar() {
-    const tick = () => {
-      const d = new Date();
-      $("#sbTime").textContent = `${pad(d.getHours())}:${pad(d.getMinutes())}`;
-    };
-    tick();
-    setInterval(tick, 15000);
-  }
-
   function init() {
     // 主题
     try {
@@ -2867,8 +2855,20 @@
     Store.load();
     if (["day", "week", "month"].includes(Store.state.prefs.defaultView)) scope.mode = Store.state.prefs.defaultView;
     buildTabbar();
-    initStatusBar();
     navigate(0);
+    // 全局返回键处理（供 Android WebView 壳调用）：有浮层则关闭它，返回 true；否则返回 false 让壳退出 App
+    window.__taBack = function () {
+      if (overlay.classList.contains("show")) {
+        closeSheet();
+        return true;
+      }
+      const cl = document.getElementById("chatLayer");
+      if (cl) {
+        cl.remove();
+        return true;
+      }
+      return false;
+    };
     initReminders();
     // 跨页面刷新联动：store 变化且不在当前页时，回到首页刷新角标
     Store.subscribe(() => {
