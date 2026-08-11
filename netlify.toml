@@ -1,0 +1,10 @@
+# Netlify 配置：启用云函数（DeepSeek 代理）
+[build]
+  publish = "."
+
+[functions]
+  directory = "netlify/functions"
+
+# 函数超时：免费套餐默认 10 秒
+[functions.deepseek]
+  timeout = 10

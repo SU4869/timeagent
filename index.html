@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <meta name="theme-color" content="#2D7FF9" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+  <meta name="apple-mobile-web-app-title" content="TimeAgent" />
+  <title>TimeAgent · 智能时间管家</title>
+  <link rel="manifest" href="manifest.webmanifest" />
+  <link rel="apple-touch-icon" href="icon.svg" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <!-- 应用外壳：桌面端以"手机"形态居中呈现，移动端全幅 -->
+  <div class="app-shell" id="appShell">
+    <div class="phone" id="phone">
+
+      <!-- 顶部状态条（纯装饰，营造原生质感） -->
+      <div class="statusbar" id="statusbar">
+        <span class="sb-time" id="sbTime">09:41</span>
+        <span class="sb-right">
+          <svg viewBox="0 0 24 24" class="sb-ico"><path d="M2 17h2v-7H2v7zm19-10v10h2V7h-2zM5 20h14v-2H5v2zM7 13h2V9H7v4zm4 0h2V9h-2v4zm4-4v4h2V9h-2z"/></svg>
+          <svg viewBox="0 0 24 24" class="sb-ico"><path d="M12 4C7 4 2.7 6.1 0 9l12 15L24 9c-2.7-2.9-7-5-12-5z" fill="currentColor" opacity=".85"/></svg>
+          <span class="sb-bat"><i></i></span>
+        </span>
+      </div>
+
+      <!-- 页面内容渲染区 -->
+      <main class="view" id="view" role="main"></main>
+
+      <!-- 底部标签栏 -->
+      <nav class="tabbar" id="tabbar" aria-label="主导航"></nav>
+
+      <!-- 悬浮 AI 按钮（首页增强） -->
+      <button class="fab" id="fab" title="AI 时间规划" aria-label="AI 时间规划">
+        <svg viewBox="0 0 24 24"><path d="M12 3l1.9 4.6L18.5 9l-4.6 1.9L12 15l-1.9-4.1L5.5 9l4.6-1.4L12 3z"/><path d="M19 14l.9 2.1L22 17l-2.1.9L19 20l-.9-2.1L16 17l2.1-.9L19 14z" opacity=".75"/></svg>
+      </button>
+    </div>
+  </div>
+
+  <!-- 弹窗 / 浮层挂载点 -->
+  <div class="overlay" id="overlay" aria-hidden="true"></div>
+  <!-- Toast 挂载点 -->
+  <div class="toast-wrap" id="toastWrap" aria-live="polite"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
