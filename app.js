@@ -1396,8 +1396,13 @@
       <div class="card">
         <div class="card-title">${svg("settings")} AI 接入配置</div>
         <div class="card-sub mt1">填入 API Key 即启用在线 AI（规划 / 对话）；留空则使用本地离线解析</div>
+        <div class="setting-row mt2"><span class="lbl">快捷预设</span><span class="card-sub">（点一下自动填好地址和模型）</span></div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:6px">
+          <button class="btn" style="flex:1;min-width:140px" data-preset="siliconflow">硅基流动 · 直连</button>
+          <button class="btn" style="flex:1;min-width:140px" data-preset="deepseek">DeepSeek 官方 · 代理</button>
+        </div>
         <div class="setting-row mt2"><span class="lbl">API Key</span></div>
-        <input class="input" id="apiKeyInput" placeholder="硅基流动 Key（sf-…）" value="${esc(Store.state.apiKey)}" />
+        <input class="input" id="apiKeyInput" placeholder="填 Key 即启用在线 AI" value="${esc(Store.state.apiKey)}" />
         <div class="setting-row mt2"><span class="lbl">模型</span></div>
         <input class="input" id="apiModelInput" placeholder="如 deepseek-ai/DeepSeek-V3" value="${esc(Store.state.apiModel)}" />
         <div class="setting-row mt2"><span class="lbl">API 地址（高级）</span></div>
@@ -1431,6 +1436,22 @@
     if (km) km.addEventListener("input", (e) => (Store.state.apiModel = e.target.value.trim() || "deepseek-ai/DeepSeek-V3"));
     const kb = $("#apiBaseInput");
     if (kb) kb.addEventListener("input", (e) => (Store.state.apiBase = e.target.value.trim() || "https://api.siliconflow.cn/v1"));
+    // 快捷预设：一键填充地址和模型，用户只需填 Key 后保存
+    document.querySelectorAll("[data-preset]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const p = btn.getAttribute("data-preset");
+        if (p === "siliconflow") {
+          Store.state.apiBase = "https://api.siliconflow.cn/v1";
+          Store.state.apiModel = "deepseek-ai/DeepSeek-V3";
+        } else if (p === "deepseek") {
+          Store.state.apiBase = "/api/deepseek";
+          Store.state.apiModel = "deepseek-chat";
+        }
+        const kb2 = $("#apiBaseInput"); if (kb2) kb2.value = Store.state.apiBase;
+        const km2 = $("#apiModelInput"); if (km2) km2.value = Store.state.apiModel;
+        const ki2 = $("#apiKeyInput"); if (ki2) ki2.focus();
+      });
+    });
   }
   function svgWrap(name) {
     return `<span class="ic">${svg(name)}</span>`;
