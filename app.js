@@ -820,7 +820,7 @@
       t.classList.toggle("active", i === idx);
       t.classList.toggle("has-badge", i === 0 && hasFresh());
     });
-    fab.classList.toggle("hidden", idx !== 0);
+    fab.classList.add("hidden"); // FAB 已下线（方案B：只保留聊天舱入口）
     view.scrollTop = 0;
     renderCurrent();
   }
@@ -962,13 +962,6 @@
 
       ${scopeBar()}
 
-      <div class="card tight">
-        <div class="ai-quick">
-          <input class="input" id="quickInput" placeholder="随便谈谈今日事务，AI 自动整理归档…" />
-          <button class="icon-btn" data-act="quick-plan" title="提交并智能排期">${svg("send")}</button>
-        </div>
-      </div>
-
       <div class="card">
         <div class="card-title">${svg("clock")} 时间分配</div>
         <div class="ring-wrap mt2">
@@ -1007,15 +1000,6 @@
   }
 
   function wireHome() {
-    const quick = $("#quickInput");
-    if (quick)
-      quick.addEventListener("keydown", (e) => {
-        if (e.key === "Enter" && quick.value.trim()) {
-          openPlanner(quick.value.trim());
-          quick.value = "";
-        }
-      });
-
     // 长按展开操作 / 单击切换完成（避免长按松手误触完成）
     $$(".tl-item").forEach((item) => {
       const id = item.dataset.id;
@@ -2460,13 +2444,69 @@
               [
                 {
                   role: "system",
-                  content: `你是 TimeAgent 智能时间管家，用简洁友好的中文回答。今天日期：${todayStr()}。你可以帮用户添加/删除/打卡日程、查询空闲时间，也可以闲聊。如果用户要安排日程，请直接给出排好的时间（HH:MM）与时长。`,
+                  content: `你是 TimeAgent 智能时间管家，用简洁友好的中文回答。今天日期：${todayStr()}。你可以帮用户添加/删除/打卡日程、查询空闲时间，也可以闲聊。若用户要求安排日程（含事项和时间），先给一句简短确认，然后在回复末尾输出一行排期数据：\n【排期】{"tasks":[{"title":"日程名","startTime":"HH:MM","endTime":"HH:MM","tag":"学习","desc":"可选"}]}【/排期】\n规则：时间用 24 小时制；tag 只能从 [学习,工作,运动,饮食,休息,社交,其他] 中选一个；结束时间未说则按常见时长合理推断；日期默认今天，用户说"明天/后天"要换算成具体日期。没有排期需求时不要输出【排期】标记。`,
                 },
                 ...history,
                 { role: "user", content: text },
               ],
-              { temperature: 0.7, maxTokens: 800, timeoutMs: 60000 }
+              { temperature: 0.5, maxTokens: 1200, timeoutMs: 60000 }
             );
+            // 解析 AI 排期数据：带【排期】标记则直接落库
+            let tasks = null;
+            const pm = replyText.match(/【排期】([\s\S]*?)【\/排期】/);
+            if (pm) {
+              try {
+                const j = JSON.parse(pm[1].trim());
+                if (Array.isArray(j.tasks) && j.tasks.length) {
+                  tasks = j.tasks
+                    .filter((t) => t && t.title)
+                    .map((t) => {
+                      const startTime = normTime(t.startTime);
+                      const endTime = normTime(t.endTime);
+                      const tag = ["学习", "工作", "运动", "饮食", "休息", "社交", "其他"].includes(t.tag) ? t.tag : "其他";
+                      return {
+                        title: String(t.title).trim().slice(0, 30),
+                        startTime,
+                        endTime,
+                        tag,
+                        tagColor: getColorForTag(tag),
+                        desc: t.desc ? String(t.desc).trim() : "",
+                        date: t.date || todayStr(),
+                      };
+                    });
+                }
+              } catch (e) {
+                tasks = null;
+              }
+            }
+            const cleanText = pm ? replyText.replace(/【排期】[\s\S]*?【\/排期】/g, "").trim() : replyText;
+            if (tasks && tasks.length) {
+              if (cleanText) pushMsg(mkMsg("text", cleanText));
+              const conflict = checkConflicts(tasks);
+              tasks.forEach((t) =>
+                Store.addSchedule({
+                  title: t.title,
+                  startTime: t.startTime,
+                  endTime: t.endTime,
+                  desc: t.desc,
+                  tag: t.tag,
+                  tagColor: t.tagColor,
+                  date: t.date,
+                  isCompleted: false,
+                  isFresh: true,
+                })
+              );
+              tasks.forEach((t) =>
+                pushMsg({
+                  type: "card",
+                  isUser: false,
+                  content: `已为你安排「${t.title}」📌`,
+                  cardData: { title: t.title, time: `${t.startTime} ~ ${t.endTime}`, tag: t.tag, color: t.tagColor, date: t.date },
+                })
+              );
+              toast(conflict ? `已添加 ${tasks.length} 项日程（部分与已有日程时间重叠）⚠️` : `已智能添加 ${tasks.length} 项日程 ✨`, conflict ? "warn" : "ok");
+              return;
+            }
             pushMsg(mkMsg("text", replyText));
             return;
           } catch (err) {
@@ -2484,7 +2524,6 @@
     });
     layer.querySelector("#chatBack").addEventListener("click", () => {
       layer.remove();
-      if (currentTab === 0) fab.classList.remove("hidden");
     });
   }
 
@@ -2597,18 +2636,6 @@
       case "open-planner":
         openPlanner("");
         break;
-      case "quick-plan": {
-        const quickInput = $("#quickInput");
-        const text = quickInput ? quickInput.value.trim() : "";
-        if (text) {
-          openPlanner(text);
-          quickInput.value = "";
-        } else {
-          toast("请先输入想安排的内容，例如「下午3点开会2小时」", "warn");
-          if (quickInput) quickInput.focus();
-        }
-        break;
-      }
       case "set-scope":
         scope.mode = t.dataset.mode || "day";
         renderCurrent();
@@ -2841,7 +2868,6 @@
     if (["day", "week", "month"].includes(Store.state.prefs.defaultView)) scope.mode = Store.state.prefs.defaultView;
     buildTabbar();
     initStatusBar();
-    $("#fab").addEventListener("click", () => openPlanner(""));
     navigate(0);
     initReminders();
     // 跨页面刷新联动：store 变化且不在当前页时，回到首页刷新角标
