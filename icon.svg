@@ -1,7 +1,11 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
-  <rect width="512" height="512" rx="112" fill="#2D7FF9"/>
-  <circle cx="256" cy="256" r="150" fill="none" stroke="#FFFFFF" stroke-width="28"/>
-  <line x1="256" y1="256" x2="256" y2="150" stroke="#FFFFFF" stroke-width="28" stroke-linecap="round"/>
-  <line x1="256" y1="256" x2="338" y2="296" stroke="#FFFFFF" stroke-width="28" stroke-linecap="round"/>
-  <circle cx="256" cy="256" r="20" fill="#FFFFFF"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="TimeAgent">
+  <rect width="512" height="512" rx="100" ry="100" fill="#F8F5EF"/>
+  <circle cx="256" cy="256" r="150" fill="none" stroke="#C9A974" stroke-width="10"/>
+  <line x1="256" y1="120" x2="256" y2="142" stroke="#C9A974" stroke-width="8" stroke-linecap="round"/>
+  <line x1="392" y1="256" x2="370" y2="256" stroke="#C9A974" stroke-width="8" stroke-linecap="round"/>
+  <line x1="256" y1="392" x2="256" y2="370" stroke="#C9A974" stroke-width="8" stroke-linecap="round"/>
+  <line x1="120" y1="256" x2="142" y2="256" stroke="#C9A974" stroke-width="8" stroke-linecap="round"/>
+  <line x1="256" y1="256" x2="256" y2="178" stroke="#1F2D44" stroke-width="12" stroke-linecap="round"/>
+  <line x1="256" y1="256" x2="322" y2="288" stroke="#1F2D44" stroke-width="10" stroke-linecap="round"/>
+  <circle cx="256" cy="256" r="11" fill="#C9A974"/>
 </svg>
