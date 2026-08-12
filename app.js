@@ -713,6 +713,25 @@
     return slots;
   }
 
+  // 生成近 N 天日程上下文（供 AI 感知用户真实日程，避免模型臆造/撞期）
+  function scheduleContext(days = 3) {
+    const t = todayStr();
+    const lines = [];
+    for (let i = 0; i < days; i++) {
+      const d = addDays(t, i);
+      const items = scopeItems(Store.state.schedule, { mode: "day", anchor: d });
+      if (!items.length) continue;
+      const label = d === t ? "今天" : d === addDays(t, 1) ? "明天" : humanDateLabel(d);
+      const row = items
+        .slice()
+        .sort((a, b) => (a.startTime || "").localeCompare(b.startTime || ""))
+        .map((it) => `${it.startTime}-${it.endTime} ${it.title}${isDone(it) ? "（已完成）" : ""}${it.tag ? " /" + it.tag : ""}`)
+        .join("；");
+      lines.push(`${label}：${row}`);
+    }
+    return lines.length ? lines.join("\n") : "（近三天暂无日程）";
+  }
+
   function buildAdvice(stats, sc) {
     const sc_ = sc || scope;
     const isToday = sc_.mode === "day" && sc_.anchor === todayStr();
@@ -1533,12 +1552,21 @@
     const scoped = scopeItems(Store.state.schedule, scope);
     const stats = computeStatsFor(scoped);
     const label = scope.mode === "week" ? "本周" : scope.mode === "month" ? "本月" : "今日";
+    // AI 数据解读：离线先渲染规则解读，在线异步升级为模型洞察（与首页同源缓存）
+    const insightBlock = scoped.length
+      ? `<div class="advice" style="margin-top:10px">
+          <span class="bulb">${svg("bulb")}</span>
+          <div class="txt" id="statInsightTxt">${esc(buildAdvice(stats, scope)).replace(/\n/g, "<br>")}</div>
+          <span class="ai-badge">${apiReady() ? "AI 解读" : "离线解读"}</span>
+        </div>`
+      : "";
     const reportEntry = `<div class="card tight">
       <div class="report-card">
         <span class="ic">${svg("report")}</span>
         <div class="tx"><div class="t">${label} AI 日报</div><div class="s">基于你的执行情况，生成有温度的总结</div></div>
         <button class="btn sm" data-act="gen-report">${svg("sparkle")} 生成</button>
       </div>
+      ${insightBlock}
     </div>`;
 
     const perTask = [...scoped]
@@ -1595,6 +1623,13 @@
     requestAnimationFrame(() => {
       $$(".bar > i", view).forEach((b) => (b.style.width = b.dataset.w + "%"));
     });
+    // AI 解读异步升级（有 Key 时替换为模型洞察；无 Key 时 genInsight 返回同款离线文案，跳过避免闪烁）
+    if (scoped.length) {
+      genInsight(stats).then((txt) => {
+        const el = view.querySelector("#statInsightTxt");
+        if (el && el.isConnected && el.textContent !== txt) el.textContent = txt;
+      });
+    }
   }
 
   /* ============================================================
@@ -1864,13 +1899,25 @@
   }
   // AI 规划（在线）：调用模型解析用户输入 → 结构化任务
   async function plannerViaApi(text, planDate) {
-    const system = `你是严谨的中文时间管理助手。今天日期：${todayStr()}。用户选择的规划日期：${planDate || todayStr()}。
+    const pd = planDate || todayStr();
+    // 注入规划日已有日程，让模型主动避开冲突时段（而非事后拦截）
+    const dayItems = scopeItems(Store.state.schedule, { mode: "day", anchor: pd });
+    const existing = dayItems.length
+      ? dayItems
+          .slice()
+          .sort((a, b) => (a.startTime || "").localeCompare(b.startTime || ""))
+          .map((i) => `${i.startTime}-${i.endTime} ${i.title}${isDone(i) ? "(已完成)" : ""}`)
+          .join("、")
+      : "（当天暂无已有日程）";
+    const system = `你是严谨的中文时间管理助手。今天日期：${todayStr()}。用户选择的规划日期：${pd}。
+用户该日期已有日程：${existing}
 请把用户的自然语言描述解析为日程任务。规则：
 1. 时间一律输出 24 小时制 HH:MM（如 15:30）；结束时间若用户未说，按常见时长合理推断。
-2. 分类(tag)只能从 [学习,工作,运动,饮食,休息,社交,其他] 中选一个最贴切的。
-3. 只返回一个 JSON 对象，不要任何多余文字或解释。格式：
+2. 若用户要求的时段与已有日程重叠，请自动微调（前后移动 15-30 分钟）到不冲突的时段，并在 desc 注明调整原因；确实无法避开时保持原时段。
+3. 分类(tag)只能从 [学习,工作,运动,饮食,休息,社交,其他] 中选一个最贴切的。
+4. 只返回一个 JSON 对象，不要任何多余文字或解释。格式：
 {"tasks":[{"title":"日程名","startTime":"HH:MM","endTime":"HH:MM","tag":"学习","desc":"可选说明"}],"question":""}
-4. 若信息不足无法完整解析（如缺少时间或时长且无法合理推断），将 question 设为一句追问，tasks 为空数组。`;
+5. 若信息不足无法完整解析（如缺少时间或时长且无法合理推断），将 question 设为一句追问，tasks 为空数组。`;
     const userMsg = `我的安排：${text}`;
     const content = await callLLM(
       [
@@ -2764,7 +2811,15 @@
               [
                 {
                   role: "system",
-                  content: `你是 TimeAgent 智能时间管家，用简洁友好的中文回答。今天日期：${todayStr()}。你可以帮用户添加/删除/打卡日程、查询空闲时间，也可以闲聊。若用户要求安排日程（含事项和时间），先给一句简短确认，然后在回复末尾输出一行排期数据：\n【排期】{"tasks":[{"title":"日程名","startTime":"HH:MM","endTime":"HH:MM","tag":"学习","desc":"可选"}]}【/排期】\n规则：时间用 24 小时制；tag 只能从 [学习,工作,运动,饮食,休息,社交,其他] 中选一个；结束时间未说则按常见时长合理推断；日期默认今天，用户说"明天/后天"要换算成具体日期。没有排期需求时不要输出【排期】标记。`,
+                  content: `你是 TimeAgent 智能时间管家，用简洁友好的中文回答。今天日期：${todayStr()}。
+用户近期真实日程如下，回答日程相关问题时必须基于它，严禁臆造未列出的日程或数字：
+${scheduleContext(3)}
+你可以帮用户添加/删除/打卡日程、查询安排、查询空闲时间，也可以闲聊。若用户要求安排日程（含事项和时间），先给一句简短确认，然后在回复末尾输出一行排期数据：
+【排期】{"tasks":[{"title":"日程名","startTime":"HH:MM","endTime":"HH:MM","tag":"学习","desc":"可选"}]}【/排期】
+规则：时间用 24 小时制；tag 只能从 [学习,工作,运动,饮食,休息,社交,其他] 中选一个；结束时间未说则按常见时长合理推断；日期默认今天，用户说"明天/后天"要换算成具体日期；若新任务与上面已有日程时间重叠，请自动微调 15-30 分钟避开冲突。没有排期需求时不要输出【排期】标记。
+若用户要求删除/标记完成/改期已有日程，则在回复末尾单独输出一行：
+【操作】{"type":"delete|done|move","title":"日程名","startTime":"HH:MM"}【/操作】
+（delete=删除，done=打卡完成，move=改期需给新 startTime；按上面日程中的标题匹配，【操作】与【排期】不要同时输出，没有匹配的日程时也要输出该行）。`,
                 },
                 ...history,
                 { role: "user", content: text },
@@ -2827,6 +2882,51 @@
               toast(conflict ? `已添加 ${tasks.length} 项日程（部分与已有日程时间重叠）⚠️` : `已智能添加 ${tasks.length} 项日程 ✨`, conflict ? "warn" : "ok");
               return;
             }
+            // 解析 AI 操作数据：删除 / 打卡 / 改期（在线 agent 直接操作真实日程）
+            const ops = [];
+            const am = replyText.match(/【操作】([\s\S]*?)【\/操作】/);
+            if (am) {
+              try {
+                const j = JSON.parse(am[1].trim());
+                if (Array.isArray(j)) ops.push(...j);
+                else if (j && j.type) ops.push(j);
+              } catch (e) {}
+            }
+            if (ops.length) {
+              const results = [];
+              ops.forEach((op) => {
+                const t = op && op.title ? String(op.title).trim() : "";
+                if (!t) return;
+                const item = Store.state.schedule.find((i) => i.title.includes(t) || t.includes(i.title));
+                if (op.type === "delete") {
+                  if (item) {
+                    Store.removeSchedule(item.id);
+                    results.push(`已删除「${item.title}」`);
+                  } else results.push(`没找到「${t}」`);
+                } else if (op.type === "done") {
+                  if (item) {
+                    Store.toggleSchedule(item.id, item.date);
+                    results.push(`已把「${item.title}」标记为${isDone(item) ? "未完成" : "已完成"}`);
+                  } else results.push(`没找到「${t}」`);
+                } else if (op.type === "move") {
+                  const ns = normTime(op.startTime);
+                  if (item && ns) {
+                    const durMin = Math.max(0, Math.round((parseHM(item.endTime) - parseHM(item.startTime)) * 60));
+                    const [h, m] = ns.split(":").map(Number);
+                    const endMin = h * 60 + m + durMin;
+                    const ne = `${pad(Math.floor(endMin / 60) % 24)}:${pad(endMin % 60)}`;
+                    Store.updateSchedule(item.id, { startTime: ns, endTime: ne });
+                    results.push(`已把「${item.title}」改到 ${ns}~${ne}（保持原时长）`);
+                  } else results.push(`没找到「${t}」或新时间无效`);
+                }
+              });
+              const cleanOps = replyText.replace(/【操作】[\s\S]*?【\/操作】/g, "").trim();
+              if (cleanOps) pushMsg(mkMsg("text", cleanOps));
+              pushMsg(mkMsg("text", results.join("\n")));
+              toast("已按你的指令更新日程 ✅", "ok");
+              renderCurrent();
+              return;
+            }
             pushMsg(mkMsg("text", replyText));
             return;
           } catch (err) {
@@ -2866,7 +2966,7 @@
     return d;
   }
 
-  // 离线对话助手：解析意图 → 增删改 + 自然语言回复
+  // 离线对话助手：解析意图 → 增删改查 + 自然语言回复
   function localChatReply(text) {
     const lower = text;
     // 删除
@@ -2879,6 +2979,16 @@
       }
       return mkMsg("text", "没有找到匹配的日程，可以告诉我更具体的关键词，例如「删除跑步」。");
     }
+    // 查询统计 / 效率（放在"完成/打卡"之前，避免"完成了多少"被打卡意图截胡）
+    if (/效率|完成率|统计|进展|表现|总结|完成(了|的)?(多少|几个|几项|进度|情况)/.test(lower)) {
+      const stats = computeStats();
+      if (!Store.state.schedule.length) return mkMsg("text", "还没有日程数据呢。先安排几件事，我就能帮你分析执行情况啦～");
+      const done = stats.completedCount,
+        total = stats.totalCount;
+      const ratio = total ? done / total : 0;
+      const praise = ratio >= 0.9 ? "执行力很赞！" : ratio >= 0.6 ? "节奏不错，继续保持。" : ratio > 0 ? "已经在行动的路上了，加油！" : "还没开始打卡，从最小的一步开始吧。";
+      return mkMsg("text", `你目前已规划 ${stats.totalHours.toFixed(1)} 小时，共 ${total} 项，完成 ${done} 项，效率评分 ${stats.efficiency} 分。${praise}`);
+    }
     // 完成 / 打卡
     if (/完成|打卡|搞定|做完/.test(lower)) {
       const name = lower.replace(/^(把|让|请|帮)?(我)?(完成|打卡|搞定|做完)/, "").replace(/[。.，,吗？?\s]/g, "").trim();
@@ -2888,6 +2998,65 @@
         return mkMsg("text", `已为你把「${item.title}」标记为${isDone(item) ? "未完成" : "已完成"} ✅`);
       }
       return mkMsg("text", "没找到对应日程，告诉我是哪一项完成啦？");
+    }
+    // 查询安排（今天 / 明天 / 后天 / 本周）
+    if (/查|看|什么|哪些|有没有|干嘛|做什么/.test(lower) && /安排|日程|今天|今日|明天|明早|明晚|后天|本周|这周/.test(lower)) {
+      const sc = { mode: "day", anchor: todayStr() };
+      let label = "今天";
+      if (/后天/.test(lower)) {
+        sc.anchor = addDays(todayStr(), 2);
+        label = "后天";
+      } else if (/明天|明早|明晚/.test(lower)) {
+        sc.anchor = addDays(todayStr(), 1);
+        label = "明天";
+      } else if (/本周|这周/.test(lower)) {
+        sc.mode = "week";
+        label = "本周";
+      }
+      const items = scopeItems(Store.state.schedule, sc);
+      if (!items.length) return mkMsg("text", `${label}还没有安排，想让我帮你规划点什么吗？`);
+      const done = items.filter((i) => isDone(i)).length;
+      const lines = items
+        .slice()
+        .sort((a, b) => (a.startTime || "").localeCompare(b.startTime || ""))
+        .map((it) => `• ${it.startTime}-${it.endTime} ${it.title}${isDone(it) ? " ✅" : ""}${it.tag && it.tag !== "其他" ? ` [${it.tag}]` : ""}`)
+        .join("\n");
+      return mkMsg("text", `${label}共 ${items.length} 项，已完成 ${done} 项：\n${lines}`);
+    }
+    // 现在该做什么（实时建议）
+    if (/现在|当前/.test(lower) && /做|该|干什么|干嘛/.test(lower)) {
+      const nowMin = new Date().getHours() * 60 + new Date().getMinutes();
+      const list = scopeItems(Store.state.schedule, { mode: "day", anchor: todayStr() });
+      const sorted = list.slice().sort((a, b) => (a.startTime || "").localeCompare(b.startTime || ""));
+      const missed = sorted.filter((i) => !isDone(i) && toMin(i.endTime) < nowMin);
+      const ongoing = sorted.filter((i) => !isDone(i) && toMin(i.startTime) <= nowMin && toMin(i.endTime) >= nowMin);
+      const upcoming = sorted.filter((i) => !isDone(i) && toMin(i.startTime) > nowMin);
+      if (ongoing.length) return mkMsg("text", `现在正在做「${ongoing[0].title}」（${ongoing[0].startTime}~${ongoing[0].endTime}），专注完成它 💪`);
+      if (upcoming.length) {
+        const n = upcoming[0];
+        const diff = toMin(n.startTime) - nowMin;
+        if (diff <= 30) return mkMsg("text", `下一项「${n.title}」${diff} 分钟后开始（${n.startTime}），先准备一下～`);
+        return mkMsg("text", `距离「${n.title}」还有约 ${fmtDurMin(diff)}，当前空闲${missed.length ? `，可先补打卡 ${missed.length} 项过期日程` : "，适合安排碎片任务或休息"}。`);
+      }
+      if (missed.length) return mkMsg("text", `${missed.length} 项日程已过未打卡：${missed.slice(0, 2).map((i) => "「" + i.title + "」").join("、")}${missed.length > 2 ? " 等" : ""}，记得补一下～`);
+      return mkMsg("text", list.length ? "今日安排已全部结束，好好休息，或者规划一下明天的日程～" : "今天还没有日程，要不要现在规划一件小事？");
+    }
+    // 改期 / 挪时间
+    if (/把/.test(lower) && /改|挪|移|调到|改到|移到|挪到|提前到|推后到|推迟到/.test(lower)) {
+      const mv = lower.match(/把(.+?)(?:改|挪|移|调到|改到|移到|挪到|提前到|推后到|推迟到)(?:到|至)?\s*(.+)$/);
+      if (mv) {
+        const name = mv[1].replace(/[。.，,吗？?\s]/g, "").trim();
+        const t = parseTime(mv[2], detectPeriod(mv[2]));
+        const item = Store.state.schedule.find((i) => i.title.includes(name) || name.includes(i.title));
+        if (!item) return mkMsg("text", `没有找到「${name}」，告诉我更准确的名字，例如「把跑步改到晚上8点」。`);
+        if (!t.found || !t.valid) return mkMsg("text", `没太听懂新的时间，试试说「把跑步改到晚上8点」或「把跑步挪到 20:00」。`);
+        const durMin = Math.max(0, Math.round((parseHM(item.endTime) - parseHM(item.startTime)) * 60));
+        const ns = `${pad(t.hour)}:${pad(t.minute)}`;
+        const endMin = t.hour * 60 + t.minute + durMin;
+        const ne = `${pad(Math.floor(endMin / 60) % 24)}:${pad(endMin % 60)}`;
+        Store.updateSchedule(item.id, { startTime: ns, endTime: ne });
+        return mkMsg("text", `已把「${item.title}」从 ${item.startTime}~${item.endTime} 改到 ${ns}~${ne}（保持原时长）。`);
+      }
     }
     // 添加
     if (/添加|安排|新建|加个|记一下|提醒/.test(lower) || /[点时]/.test(lower)) {
@@ -2930,7 +3099,7 @@
       return mkMsg("text", "我是你的 AI 时间管家～试着对我说「下午3点去健身2小时」，我就能帮你智能排期 💪");
     return mkMsg(
       "text",
-      `你是想调整日程吗？我可以帮你：添加（如「加个明早背单词1小时」）、删除（如「删除跑步」）、完成打卡，或查询空闲时段。\n\n目前你今天有 ${stats.totalCount} 项安排，已规划 ${stats.totalHours.toFixed(1)} 小时。`
+      `你是想调整日程吗？我可以帮你：添加（如「加个明早背单词1小时」）、删除（如「删除跑步」）、完成打卡、改期（如「把跑步改到晚上8点」）、查询安排（如「今天有什么安排」）或查询空闲时段。\n\n目前你今天有 ${stats.totalCount} 项安排，已规划 ${stats.totalHours.toFixed(1)} 小时。`
     );
   }
   function mkMsg(type, content, cardData) {
