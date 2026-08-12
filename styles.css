@@ -382,6 +382,17 @@ ul { list-style: none; }
 .advice .ai-badge { flex: 0 0 auto; font-size: 10px; font-weight: 800; color: var(--primary-strong); background: var(--surface-solid); border: 1px solid var(--line); border-radius: var(--r-pill); padding: 2px 7px; letter-spacing: .5px; align-self: center; }
 .advice .txt:empty::after { content: "AI 正在思考…"; color: var(--t3); }
 
+/* AI 能力来源标注：AI 在线（模型生成） / 本地规则（离线回退） */
+.src-badge { display: inline-flex; align-items: center; gap: 4px; font-size: 10px; font-weight: 700; border-radius: var(--r-pill); padding: 2px 8px; letter-spacing: .3px; white-space: nowrap; }
+.src-badge::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.src-badge.on { color: var(--ok, #2E7D32); background: var(--ok-soft, #E8F5E9); }
+.src-badge.off { color: var(--t3); background: var(--surface-2); }
+.advice .src-badge { flex: 0 0 auto; align-self: center; }
+.report-src { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; font-size: 11px; color: var(--t3); }
+.planner-src { display: inline-flex; align-items: center; font-size: 11px; color: var(--t3); margin-top: 6px; }
+.chat-src { font-size: 10px; color: var(--t3); margin-bottom: 5px; font-weight: 600; }
+.chat-src .dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; margin-right: 4px; vertical-align: 1px; }
+
 /* ===================== 首页：一句话排期快捷条 ===================== */
 .quick-input { display: flex; gap: 8px; margin: 0 0 12px; }
 .quick-input .ai-input { height: 44px; font-size: 13.5px; }

@@ -784,8 +784,9 @@
   async function genInsight(stats) {
     const key = insightKey(stats);
     const hit = insightCache.get(key);
-    if (hit && Date.now() - hit.at < 90 * 1000) return hit.text;
-    if (!apiReady()) return buildAdvice(stats, scope);
+    // 缓存只存模型结果，命中即「AI 在线」
+    if (hit && Date.now() - hit.at < 90 * 1000) return { text: hit.text, via: "ai" };
+    if (!apiReady()) return { text: buildAdvice(stats, scope), via: "offline" };
     const label = scope.mode === "week" ? "本周" : scope.mode === "month" ? "本月" : "今日";
     const withDate = scope.mode !== "day";
     const scoped = scopeItems(Store.state.schedule, scope);
@@ -812,9 +813,9 @@
       const clean = text.replace(/\s*\n+\s*/g, " ").trim().slice(0, 200);
       insightCache.set(key, { text: clean, at: Date.now() });
       if (insightCache.size > 12) insightCache.clear(); // 防止跨天累积无限增长
-      return clean;
+      return { text: clean, via: "ai" };
     } catch (e) {
-      return buildAdvice(stats, scope);
+      return { text: buildAdvice(stats, scope), via: "offline" };
     }
   }
 
@@ -1231,7 +1232,7 @@
         <div class="advice">
           <span class="bulb">${svg("bulb")}</span>
           <div class="txt" id="homeAdviceTxt">${esc(advice)}</div>
-          ${apiReady() ? '<span class="ai-badge" title="AI 实时生成">AI</span>' : ""}
+          <span class="src-badge off" id="homeAdviceBadge" title="当前内容来源">本地规则</span>
         </div>
       </div>
     </div>`;
@@ -1239,14 +1240,20 @@
     renderRing($("#ring"), stats.timeDist, stats.totalHours);
     wireHome();
     scheduleFreshClear();
-    // AI 洞察异步升级：先展示离线建议，模型返回后无缝替换（带缓存）
-    if (apiReady()) {
-      const txt = $("#homeAdviceTxt");
-      if (txt)
-        genInsight(stats).then((text) => {
-          if (txt.isConnected) txt.textContent = text;
-        });
-    }
+    // AI 洞察异步升级：先展示离线建议，模型返回后无缝替换（带缓存），并同步徽标来源
+    const aiTxt = $("#homeAdviceTxt");
+    if (aiTxt)
+      genInsight(stats).then((r) => {
+        if (!aiTxt.isConnected) return;
+        aiTxt.textContent = r.text;
+        const badge = $("#homeAdviceBadge");
+        if (badge) {
+          const on = r.via === "ai";
+          badge.textContent = on ? "AI 在线" : "本地规则";
+          badge.classList.toggle("on", on);
+          badge.classList.toggle("off", !on);
+        }
+      });
   }
 
   function statCell(icon, k, v, key) {
@@ -1552,12 +1559,12 @@
     const scoped = scopeItems(Store.state.schedule, scope);
     const stats = computeStatsFor(scoped);
     const label = scope.mode === "week" ? "本周" : scope.mode === "month" ? "本月" : "今日";
-    // AI 数据解读：离线先渲染规则解读，在线异步升级为模型洞察（与首页同源缓存）
+    // AI 数据解读：离线先渲染规则解读，在线异步升级为模型洞察（与首页同源缓存），徽标标注真实来源
     const insightBlock = scoped.length
       ? `<div class="advice" style="margin-top:10px">
           <span class="bulb">${svg("bulb")}</span>
           <div class="txt" id="statInsightTxt">${esc(buildAdvice(stats, scope)).replace(/\n/g, "<br>")}</div>
-          <span class="ai-badge">${apiReady() ? "AI 解读" : "离线解读"}</span>
+          <span class="src-badge off" id="statInsightBadge" title="当前内容来源">本地规则</span>
         </div>`
       : "";
     const reportEntry = `<div class="card tight">
@@ -1623,11 +1630,18 @@
     requestAnimationFrame(() => {
       $$(".bar > i", view).forEach((b) => (b.style.width = b.dataset.w + "%"));
     });
-    // AI 解读异步升级（有 Key 时替换为模型洞察；无 Key 时 genInsight 返回同款离线文案，跳过避免闪烁）
+    // AI 解读异步升级（有 Key 时替换为模型洞察并标注 AI 在线；无 Key/失败保持本地规则）
     if (scoped.length) {
-      genInsight(stats).then((txt) => {
+      genInsight(stats).then((r) => {
         const el = view.querySelector("#statInsightTxt");
-        if (el && el.isConnected && el.textContent !== txt) el.textContent = txt;
+        if (el && el.isConnected && el.textContent !== r.text) el.textContent = r.text;
+        const badge = view.querySelector("#statInsightBadge");
+        if (badge) {
+          const on = r.via === "ai";
+          badge.textContent = on ? "AI 在线" : "本地规则";
+          badge.classList.toggle("on", on);
+          badge.classList.toggle("off", !on);
+        }
       });
     }
   }
@@ -1762,6 +1776,7 @@
          <div class="pa-txt" id="plannerAskTxt"></div>
          <button class="pa-x" data-act="dismiss-ask" title="收起">${svg("close")}</button>
        </div>
+       <div class="planner-src" id="plannerSrc" hidden></div>
        <div class="hint-chips">
          ${["明早8点背单词1小时", "下午2点开会到4点", "晚上7点跑步半小时", "中午12点吃饭"].map((t) => `<span class="hint-chip" data-hint="${esc(t)}">${esc(t)}</span>`).join("")}
        </div>`,
@@ -1964,12 +1979,21 @@
     const text = input.value.trim();
     if (!text) return;
     setPlannerLoading(true);
-    const finish = (res) => {
+    // 标注本次解析来源：AI 在线（大模型） / 本地规则（离线解析）
+    const setSrc = (via, note) => {
+      const s = overlay.querySelector("#plannerSrc");
+      if (!s) return;
+      const on = via === "ai";
+      s.innerHTML = `<span class="src-badge ${on ? "on" : "off"}">${on ? "AI 在线" : "本地规则"}</span>${note ? `<span style="margin-left:6px">${esc(note)}</span>` : ""}`;
+      s.hidden = false;
+    };
+    const finish = (res, via) => {
       setPlannerLoading(false);
       if (!res || typeof res !== "object") return;
       if (res.question) {
         plannerDraft = res.pending || null;
         input.value = "";
+        setSrc("offline", "信息不足，等待补充");
         // 追问内容常驻显示，不自动消失，用户看清后再补充
         if (ask && askTxt) {
           askTxt.textContent = res.question;
@@ -1979,6 +2003,7 @@
         return;
       }
       plannerDraft = null;
+      setSrc(via, via === "ai" ? "由大模型解析你的需求" : "本地规则解析（未配置 API 或已回退）");
       res.tasks.forEach((t) => (t.date = planDate || t.date || todayStr()));
       if (checkConflicts(res.tasks)) {
         showConflict(res.tasks);
@@ -1986,12 +2011,12 @@
       }
       addTasksFromPlanner(res.tasks);
     };
-    const offline = () => finish(buildFreeDemoTasks(text, undefined, plannerDraft));
+    const offline = () => finish(buildFreeDemoTasks(text, undefined, plannerDraft), "offline");
     setTimeout(async () => {
       if (apiReady()) {
         try {
           const r = await plannerViaApi(text, planDate);
-          finish(r);
+          finish(r, "ai");
           return;
         } catch (err) {
           console.warn("API 规划失败，回退离线解析：", err);
@@ -2162,16 +2187,26 @@
     const label = scope.mode === "week" ? "本周" : scope.mode === "month" ? "本月" : "今日";
     openSheet(
       `<div class="sheet-head"><div class="h">📅 ${label}日报</div><button class="x" data-close>${svg("close")}</button></div>
+       <div class="report-src"><span class="src-badge ${apiReady() ? "on" : "off"}" id="reportSrcBadge">${apiReady() ? "AI 在线" : "本地规则"}</span><span>${apiReady() ? "调用模型生成中…" : "离线模板生成"}</span></div>
        <div id="reportBody" class="report-body"><span class="typing"><i></i><i></i><i></i></span> AI 正在生成你的${label}总结…</div>
        <button class="btn block mt3 hide" id="closeReport" data-close>关闭</button>`,
       {
         onOpen: (el) => {
           const body = el.querySelector("#reportBody");
           const closeBtn = el.querySelector("#closeReport");
-          const finish = (text) => {
+          const srcBadge = el.querySelector("#reportSrcBadge");
+          const srcHint = srcBadge ? srcBadge.nextElementSibling : null;
+          const finish = (text, via) => {
             if (!el.isConnected) return; // 用户已关闭，避免写入已销毁节点
             body.innerHTML = `<div>${esc(text).replace(/\n/g, "<br>")}</div>`;
             closeBtn.classList.remove("hide");
+            if (srcBadge) {
+              const on = via === "ai";
+              srcBadge.textContent = on ? "AI 在线" : "本地规则";
+              srcBadge.classList.toggle("on", on);
+              srcBadge.classList.toggle("off", !on);
+            }
+            if (srcHint) srcHint.textContent = via === "ai" ? "由大模型根据你的日程生成" : "基于本地规则模板生成";
           };
           // 在线优先：成功配置 API 就调模型生成真实日报；失败回退离线模板
           if (apiReady()) {
@@ -2194,13 +2229,13 @@
               ],
               { temperature: 0.7, maxTokens: 800, timeoutMs: 45000 }
             )
-              .then((text) => finish(text))
+              .then((text) => finish(text, "ai"))
               .catch((err) => {
                 toast("AI 生成失败，已切换离线总结", "warn");
-                finish(genOfflineReport(stats));
+                finish(genOfflineReport(stats), "offline");
               });
           } else {
-            setTimeout(() => finish(genOfflineReport(stats)), 900);
+            setTimeout(() => finish(genOfflineReport(stats), "offline"), 900);
           }
         },
       }
@@ -2311,18 +2346,28 @@
     } else if (key === "advice") {
       title = `${label}AI 优化建议`;
       const advice = buildAdvice(stats, scope);
-      body = `<div class="report-body"><div id="adviceDetailTxt">${esc(advice).replace(/\n/g, "<br>")}</div></div>
+      body = `<div class="report-body">
+        <div class="report-src"><span class="src-badge off" id="adviceDetailBadge">本地规则</span>基于你的日程数据</div>
+        <div id="adviceDetailTxt">${esc(advice).replace(/\n/g, "<br>")}</div>
+      </div>
         <button class="btn block mt3" data-act="gen-report">${svg("sparkle")} 生成完整日报</button>`;
     }
     const sheetEl = openSheet(
       `<div class="sheet-head"><div class="h">${title}</div><button class="x" data-close>${svg("close")}</button></div>
        <div class="mt1">${body}</div>`
     );
-    // AI 优化建议详情：异步升级为模型生成的真实洞察（与首页同源缓存）
-    if (key === "advice" && apiReady()) {
-      genInsight(stats).then((text) => {
+    // AI 优化建议详情：异步升级为模型生成的真实洞察（与首页同源缓存），并标注真实来源
+    if (key === "advice") {
+      genInsight(stats).then((r) => {
         const el = sheetEl && sheetEl.querySelector("#adviceDetailTxt");
-        if (el && el.isConnected) el.textContent = text;
+        if (el && el.isConnected) el.textContent = r.text;
+        const badge = sheetEl && sheetEl.querySelector("#adviceDetailBadge");
+        if (badge) {
+          const on = r.via === "ai";
+          badge.textContent = on ? "AI 在线" : "本地规则";
+          badge.classList.toggle("on", on);
+          badge.classList.toggle("off", !on);
+        }
       });
     }
   }
@@ -2787,6 +2832,14 @@
       list.appendChild(chatBubble(m));
       scrollChat();
     }
+    // 顶部模式标签：AI 在线 / 离线助手（调用失败回退时同步切换）
+    function setMode(online) {
+      const tag = layer.querySelector("#chatModeTag");
+      if (!tag) return;
+      tag.textContent = online ? "AI 在线" : "离线助手";
+      tag.style.background = online ? "var(--ok-soft, #E8F5E9)" : "var(--primary-soft)";
+      tag.style.color = online ? "var(--ok, #2E7D32)" : "var(--primary-strong)";
+    }
     function sendMsg() {
       const text = input.value.trim();
       if (!text) return;
@@ -2856,7 +2909,7 @@ ${scheduleContext(3)}
             }
             const cleanText = pm ? replyText.replace(/【排期】[\s\S]*?【\/排期】/g, "").trim() : replyText;
             if (tasks && tasks.length) {
-              if (cleanText) pushMsg(mkMsg("text", cleanText));
+              if (cleanText) pushMsg(mkMsg("text", cleanText, null, "ai"));
               const conflict = checkConflicts(tasks);
               tasks.forEach((t) =>
                 Store.addSchedule({
@@ -2877,6 +2930,7 @@ ${scheduleContext(3)}
                   isUser: false,
                   content: `已为你安排「${t.title}」📌`,
                   cardData: { title: t.title, time: `${t.startTime} ~ ${t.endTime}`, tag: t.tag, color: t.tagColor, date: t.date },
+                  via: "ai",
                 })
               );
               toast(conflict ? `已添加 ${tasks.length} 项日程（部分与已有日程时间重叠）⚠️` : `已智能添加 ${tasks.length} 项日程 ✨`, conflict ? "warn" : "ok");
@@ -2921,17 +2975,18 @@ ${scheduleContext(3)}
                 }
               });
               const cleanOps = replyText.replace(/【操作】[\s\S]*?【\/操作】/g, "").trim();
-              if (cleanOps) pushMsg(mkMsg("text", cleanOps));
-              pushMsg(mkMsg("text", results.join("\n")));
+              if (cleanOps) pushMsg(mkMsg("text", cleanOps, null, "ai"));
+              pushMsg(mkMsg("text", results.join("\n"), null, "ai"));
               toast("已按你的指令更新日程 ✅", "ok");
               renderCurrent();
               return;
             }
-            pushMsg(mkMsg("text", replyText));
+            pushMsg(mkMsg("text", replyText, null, "ai"));
             return;
           } catch (err) {
             console.warn("在线对话失败，回退本地助手：", err);
-            pushMsg(mkMsg("text", `（在线助手暂时不可用，已切换本地助手）`));
+            setMode(false); // 顶部状态同步为离线助手
+            pushMsg(mkMsg("text", `（在线助手暂时不可用，已切换本地助手）`, null, "offline"));
           }
         }
         const reply = localChatReply(text);
@@ -2948,11 +3003,14 @@ ${scheduleContext(3)}
   }
 
   function chatBubble(m) {
+    // AI 消息来源标签：AI 在线（大模型）/ 本地规则（离线助手）
+    const srcTag = (via) =>
+      `<div class="chat-src"><span class="dot" style="background:${via === "ai" ? "var(--ok, #2E7D32)" : "var(--t3)"}"></span>${via === "ai" ? "AI 在线" : "本地规则"}</div>`;
     const d = document.createElement("div");
     if (m.type === "card" && m.cardData) {
       d.style.cssText = "align-self:flex-start;max-width:80%;background:var(--surface-solid);border:1px solid var(--line);border-radius:14px;padding:12px;box-shadow:var(--shadow-sm)";
       const c = m.cardData;
-      d.innerHTML = `<div style="font-size:11px;color:var(--t3);margin-bottom:6px">AI</div>
+      d.innerHTML = `${srcTag(m.via)}
         <div style="font-weight:700;margin-bottom:6px">${esc(c.title)}</div>
         <div style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--t2)">
           ${c.date ? `<span>📅 ${humanDateLabel(c.date)}</span>` : ""}
@@ -2961,7 +3019,7 @@ ${scheduleContext(3)}
     } else {
       const isU = m.isUser;
       d.style.cssText = `align-self:${isU ? "flex-end" : "flex-start"};max-width:78%;background:${isU ? "var(--primary)" : "var(--surface-solid)"};color:${isU ? "#fff" : "var(--t1)"};border:1px solid ${isU ? "transparent" : "var(--line)"};border-radius:14px;padding:11px 13px;font-size:14px;line-height:1.6;box-shadow:var(--shadow-sm);white-space:pre-wrap;word-break:break-word`;
-      d.innerHTML = (isU ? "" : '<div style="font-size:11px;color:var(--t3);margin-bottom:5px">AI</div>') + esc(m.content);
+      d.innerHTML = (isU ? "" : srcTag(m.via)) + esc(m.content);
     }
     return d;
   }
@@ -3102,8 +3160,9 @@ ${scheduleContext(3)}
       `你是想调整日程吗？我可以帮你：添加（如「加个明早背单词1小时」）、删除（如「删除跑步」）、完成打卡、改期（如「把跑步改到晚上8点」）、查询安排（如「今天有什么安排」）或查询空闲时段。\n\n目前你今天有 ${stats.totalCount} 项安排，已规划 ${stats.totalHours.toFixed(1)} 小时。`
     );
   }
-  function mkMsg(type, content, cardData) {
-    return { type, isUser: false, content, cardData };
+  function mkMsg(type, content, cardData, via) {
+    // via: "ai"=大模型生成 / "offline"=本地规则（缺省按本地，由调用方对 AI 结果显式传 "ai"）
+    return { type, isUser: false, content, cardData, via: via || "offline" };
   }
 
   /* ============================================================
