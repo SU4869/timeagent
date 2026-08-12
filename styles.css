@@ -411,7 +411,6 @@ ul { list-style: none; }
 .issue-bar .ib-txt { flex: 1; font-size: 12.5px; color: var(--t2); line-height: 1.5; }
 .issue-bar .ib-go { color: var(--t3); display: flex; }
 .issue-bar .ib-go svg { width: 15px; height: 15px; stroke: currentColor; fill: none; stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round; }
-.issue-bar + .quick-input { margin-top: 0; }
 
 /* ===================== 首页：环比趋势徽标 ===================== */
 .trend { margin-left: 8px; font-size: 11px; font-weight: 700; border-radius: var(--r-pill); padding: 2px 8px; display: inline-flex; align-items: center; gap: 3px; vertical-align: 2px; }
