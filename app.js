@@ -714,16 +714,40 @@
   }
 
   function buildAdvice(stats, sc) {
-    const isToday = !sc || (sc.mode === "day" && sc.anchor === todayStr());
-    if (!Store.state.schedule.length)
-      return "还没有任何安排哦。点击右上角 AI 图标或直接告诉我，就能智能规划你的时间啦～";
-    const label = sc && sc.mode === "week" ? "本周" : sc && sc.mode === "month" ? "本月" : "今日";
+    const sc_ = sc || scope;
+    const isToday = sc_.mode === "day" && sc_.anchor === todayStr();
+    const label = sc_.mode === "week" ? "本周" : sc_.mode === "month" ? "本月" : "今日";
+    const scoped = scopeItems(Store.state.schedule, sc_);
+    if (!scoped.length) {
+      if (!Store.state.schedule.length)
+        return "还没有任何安排哦。点击右上角 AI 图标或直接告诉我，就能智能规划你的时间啦～";
+      return `${label}暂时还没有日程，去首页规划一件小事吧，比如「明早 8 点背单词 1 小时」。`;
+    }
+    const timeStr = (it) =>
+      it.startTime ? (it.endTime && it.endTime !== it.startTime ? `${it.startTime}-${it.endTime}` : it.startTime) : "";
+    const sorted = [...scoped].sort((a, b) => (a.startTime || "").localeCompare(b.startTime || ""));
+    const done = stats.completedCount,
+      total = stats.totalCount;
+    const parts = [];
+    if (total === 1) {
+      // 仅 1 项：聚焦该事项本身，不谈"分类失衡/多任务协调"
+      const it = sorted[0];
+      const itDone = isDone(it);
+      parts.push(`${label}只规划了「${it.title}」一项${timeStr(it) ? `（${timeStr(it)}）` : ""}${itDone ? "，已完成，节奏不错" : "，还没完成"}。`);
+      parts.push(
+        itDone
+          ? "可以再补 1-2 件小事，或留一段空白休息，让一天更从容。"
+          : `建议现在就做：把「${it.title}」拆成 25 分钟的小步骤开始，动起来就不会觉得难了。`
+      );
+    } else {
+      parts.push(`${label}已规划 ${stats.totalHours.toFixed(1)} 小时，完成 ${done}/${total} 项。`);
+      const nxt = sorted.find((i) => !isDone(i));
+      if (nxt) parts.push(`优先处理「${nxt.title}」${nxt.startTime ? `（${nxt.startTime} 开始）` : ""}，先啃最要紧的一块。`);
+      else if (total > 0) parts.push("全部完成，执行力很棒，记得留点时间休息。");
+    }
     const slots = isToday ? freeSlots() : [];
-    const base = `${label}已规划 ${stats.totalHours.toFixed(1)} 小时，完成 ${stats.completedCount}/${stats.totalCount} 项，效率评分 ${stats.efficiency} 分。`;
-    const slotNote = slots.length
-      ? ` AI 发现空闲时段：${slots.join("、")}，建议用来休息或碎片化学习。`
-      : "";
-    return base + slotNote;
+    if (slots.length) parts.push(`空闲时段 ${slots.join("、")}，适合休息或碎片化学习。`);
+    return parts.join(" ");
   }
 
   /* ============================================================
@@ -735,26 +759,29 @@
   const insightCache = new Map();
   function insightKey(stats) {
     const sc = scope;
-    return `${sc.mode}:${sc.anchor}:${Store.state.schedule.length}:${stats.completedCount}:${stats.totalCount}:${Math.round(stats.totalHours * 10)}`;
+    // 仅用「当前查看范围」的维度，避免依赖全局 schedule.length 造成 stale 命中
+    return `${sc.mode}:${sc.anchor}:${stats.completedCount}:${stats.totalCount}:${Math.round(stats.totalHours * 10)}`;
   }
   async function genInsight(stats) {
     const key = insightKey(stats);
     const hit = insightCache.get(key);
-    if (hit && Date.now() - hit.at < 5 * 60 * 1000) return hit.text;
+    if (hit && Date.now() - hit.at < 90 * 1000) return hit.text;
     if (!apiReady()) return buildAdvice(stats, scope);
     const label = scope.mode === "week" ? "本周" : scope.mode === "month" ? "本月" : "今日";
     const withDate = scope.mode !== "day";
-    const rows = scopeItems(Store.state.schedule, scope)
+    const scoped = scopeItems(Store.state.schedule, scope);
+    const rows = scoped
       .map(
         (it) =>
           `${withDate ? (it.date || todayStr()) + " " : ""}${it.startTime}-${it.endTime} ${it.title}${isDone(it) ? "（已完成）" : "（未完成）"}${it.tag ? " /" + it.tag : ""}`
       )
       .join("\n");
     const prompt =
-      `你是用户的私人时间管理洞察助手。今天日期：${todayStr()}。用户当前查看「${label}」概览。\n` +
-      `以下是该周期日程（${withDate ? "日期 " : ""}时间 事项 状态 /分类）：\n${rows || "（该周期暂无日程）"}\n` +
-      `请用最多 3 句话给出：① 一句话总评；② 1-2 条具体洞察（如分类失衡、完成率问题、空闲时段建议）；③ 1 条明确可执行的改进建议。` +
-      `全文 100 字以内，自然中文，不要列表符号、不要加粗、不要 emoji、不要夸张赞美。`;
+      `你是用户的私人时间管理洞察助手。今天真实日期：${todayStr()}。\n` +
+      `用户当前查看「${label}」概览，该周期严格只有下面列出的 ${scoped.length} 个日程（${withDate ? "日期 " : ""}时间 事项 状态 /分类）：\n${rows || "（该周期暂无日程）"}\n` +
+      `【硬性要求】你的分析必须完全基于上述真实日程，严禁臆造任何未列出的日程、数字或完成情况；若只有 1 个日程，就不要谈"分类失衡/多任务协调"，请聚焦这一个事项本身给建议。\n` +
+      `请输出最多 3 句：① 一句话贴合实际的总评；② 1 条针对现有日程的具体可执行改进建议（如把某事项提前、补全休息、降低密度）；③ 如需，1 句鼓励。` +
+      `全文 90 字以内，自然中文，不用列表符号、不用加粗、不用 emoji、不夸张。`;
     try {
       const text = await callLLM(
         [
@@ -2110,8 +2137,9 @@
               .join("\n");
             const prompt =
               `请为「${label}」写一份简短温暖的时间日报。今天日期：${todayStr()}。\n` +
-              `以下是用户的日程（${withDate ? "日期 " : ""}时间 事项 状态 /分类）：\n${rows || "（该时间段暂无日程）"}\n` +
-              `请输出：一句话总评；2-3 条亮点或发现；1 条具体的明日改进建议。全文 150 字以内，短段落，语气自然，不要用夸张赞美。`;
+              `以下是用户「${label}」严格全部 ${scoped.length} 个日程（${withDate ? "日期 " : ""}时间 事项 状态 /分类）：\n${rows || "（该时间段暂无日程）"}\n` +
+              `【硬性要求】必须完全基于上述真实日程写作，严禁臆造任何未列出的日程、数字或完成情况；若只有 1 个日程，就围绕这一个事项本身展开，不要谈"多任务协调/分类失衡"。\n` +
+              `请输出：一句话总评；2-3 条亮点或发现；1 条具体的改进建议。全文 150 字以内，短段落，语气自然，不要用夸张赞美。`;
             callLLM(
               [
                 { role: "system", content: "你是严谨又温暖的私人时间管理日报助手。" },
@@ -2133,10 +2161,31 @@
   }
 
   function genOfflineReport(stats) {
-    if (!Store.state.schedule.length)
-      return "今天你还没有安排任何日程。\n\n不妨去首页和 AI 聊聊，先规划一件小事——比如「明早 8 点背单词 1 小时」。千里之行，始于足下，期待明天看到一个更有规划的你 🌱";
+    const sc_ = scope;
+    const label = sc_.mode === "week" ? "本周" : sc_.mode === "month" ? "本月" : "今日";
+    const scoped = scopeItems(Store.state.schedule, sc_);
+    if (!scoped.length) {
+      if (!Store.state.schedule.length)
+        return "今天你还没有安排任何日程。\n\n不妨去首页和 AI 聊聊，先规划一件小事——比如「明早 8 点背单词 1 小时」。千里之行，始于足下，期待明天看到一个更有规划的你 🌱";
+      return `${label}暂时还没有日程。\n\n不妨先规划一件小事，比如「明早 8 点背单词 1 小时」，让${label}有个清晰的起点 🌱`;
+    }
     const done = stats.completedCount,
       total = stats.totalCount;
+    const slots = freeSlots();
+    const slotNote = slots.length ? `\n\n⏳ 顺带一提，今天还有空闲时段：${slots.join("、")}，可用来休息或碎片化学习。` : "";
+    // 仅 1 项：聚焦该事项本身，不再谈"类别分布/多任务协调"
+    if (total === 1) {
+      const it = scoped[0];
+      const itDone = isDone(it);
+      const timeStr = it.startTime ? (it.endTime && it.endTime !== it.startTime ? `${it.startTime}-${it.endTime}` : it.startTime) : "";
+      const praise = itDone
+        ? "这一项已经完成，是个不错的开始。"
+        : "这一项还没完成，别急，从最小的第一步开始就好。";
+      const advice = itDone
+        ? "\n\n💡 保持建议：可以再补充 1-2 件小事，或留一段空白休息，让节奏更从容。"
+        : `\n\n💡 改进建议：把「${it.title}」拆成 25 分钟的小步骤，先做 5 分钟，行动就会顺畅起来。`;
+      return `【${label}时间总结】\n\n你${label}规划了「${it.title}」一项${timeStr ? `（${timeStr}）` : ""}，共 ${stats.totalHours.toFixed(1)} 小时。\n\n${praise}${advice}${slotNote}\n\n明天也要元气满满，做时间的主人 💪`;
+    }
     const ratio = total ? done / total : 0;
     let praise = "";
     if (ratio >= 0.9) praise = "今天你几乎完成了所有计划，执行力拉满，非常出色！";
@@ -2147,9 +2196,7 @@
       ratio < 1
         ? "\n\n💡 改进建议：未完成的事项可以拆解成更小的步骤，并为高优先级任务预留整块专注时间，减少切换损耗。"
         : "\n\n💡 保持建议：你已形成良好的时间节律，明天的计划可以适当加入一些放松与运动，让状态更可持续。";
-    const slots = freeSlots();
-    const slotNote = slots.length ? `\n\n⏳ 顺带一提，今天还有空闲时段：${slots.join("、")}，可用来休息或碎片化学习。` : "";
-    return `【今日时间利用总结】\n\n你今天共规划 ${stats.totalHours.toFixed(1)} 小时，分布在 ${stats.timeDist.length} 个类别中，完成 ${done}/${total} 项，效率评分 ${stats.efficiency} 分。\n\n${praise}${advice}${slotNote}\n\n明天也要元气满满，做时间的主人 💪`;
+    return `【${label}时间利用总结】\n\n你${label}共规划 ${stats.totalHours.toFixed(1)} 小时，分布在 ${stats.timeDist.length} 个类别中，完成 ${done}/${total} 项，效率评分 ${stats.efficiency} 分。\n\n${praise}${advice}${slotNote}\n\n明天也要元气满满，做时间的主人 💪`;
   }
 
   /* ============================================================
