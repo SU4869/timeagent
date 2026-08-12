@@ -1845,19 +1845,51 @@
      AI 日报浮层
      ============================================================ */
   function openReport() {
-    const stats = computeStats();
+    // 与当前查看范围（日/周/月）保持一致，避免「今日日报」标题配本周/本月数据
+    const scoped = scopeItems(Store.state.schedule, scope);
+    const stats = computeStatsFor(scoped);
+    const label = scope.mode === "week" ? "本周" : scope.mode === "month" ? "本月" : "今日";
     openSheet(
-      `<div class="sheet-head"><div class="h">📅 今日日报</div><button class="x" data-close>${svg("close")}</button></div>
-       <div id="reportBody" class="report-body"><span class="typing"><i></i><i></i><i></i></span> AI 正在生成你的今日总结…</div>
+      `<div class="sheet-head"><div class="h">📅 ${label}日报</div><button class="x" data-close>${svg("close")}</button></div>
+       <div id="reportBody" class="report-body"><span class="typing"><i></i><i></i><i></i></span> AI 正在生成你的${label}总结…</div>
        <button class="btn block mt3 hide" id="closeReport" data-close>关闭</button>`,
       {
         onOpen: (el) => {
-          // 离线生成：基于统计的有温度总结
-          setTimeout(() => {
-            const text = genOfflineReport(stats);
-            el.querySelector("#reportBody").innerHTML = `<div>${esc(text).replace(/\n/g, "<br>")}</div>`;
-            el.querySelector("#closeReport").classList.remove("hide");
-          }, 900);
+          const body = el.querySelector("#reportBody");
+          const closeBtn = el.querySelector("#closeReport");
+          const finish = (text) => {
+            if (!el.isConnected) return; // 用户已关闭，避免写入已销毁节点
+            body.innerHTML = `<div>${esc(text).replace(/\n/g, "<br>")}</div>`;
+            closeBtn.classList.remove("hide");
+          };
+          // 在线优先：成功配置 API 就调模型生成真实日报；失败回退离线模板
+          if (apiReady()) {
+            const withDate = scope.mode !== "day";
+            const rows = scoped
+              .map(
+                (it) =>
+                  `${withDate ? (it.date || todayStr()) + " " : ""}${it.startTime}-${it.endTime} ${it.title}${isDone(it) ? "（已完成）" : ""}${it.tag ? " /" + it.tag : ""}`
+              )
+              .join("\n");
+            const prompt =
+              `请为「${label}」写一份简短温暖的时间日报。今天日期：${todayStr()}。\n` +
+              `以下是用户的日程（${withDate ? "日期 " : ""}时间 事项 状态 /分类）：\n${rows || "（该时间段暂无日程）"}\n` +
+              `请输出：一句话总评；2-3 条亮点或发现；1 条具体的明日改进建议。全文 150 字以内，短段落，语气自然，不要用夸张赞美。`;
+            callLLM(
+              [
+                { role: "system", content: "你是严谨又温暖的私人时间管理日报助手。" },
+                { role: "user", content: prompt },
+              ],
+              { temperature: 0.7, maxTokens: 800, timeoutMs: 45000 }
+            )
+              .then((text) => finish(text))
+              .catch((err) => {
+                toast("AI 生成失败，已切换离线总结", "warn");
+                finish(genOfflineReport(stats));
+              });
+          } else {
+            setTimeout(() => finish(genOfflineReport(stats)), 900);
+          }
         },
       }
     );
