@@ -727,6 +727,51 @@
   }
 
   /* ============================================================
+     首页 AI 洞察（P0）：API 优先生成"今日/本周/本月"一句话洞察
+     - 5 分钟缓存，避免反复切换范围重复调用浪费 token
+     - 无 Key / 调用失败 → 回退离线 buildAdvice，保证零依赖
+     ============================================================ */
+  let insightCache = null;
+  function insightKey(stats) {
+    const sc = scope;
+    return `${sc.mode}:${sc.anchor}:${Store.state.schedule.length}:${stats.completedCount}:${stats.totalCount}:${Math.round(stats.totalHours * 10)}`;
+  }
+  async function genInsight(stats) {
+    const key = insightKey(stats);
+    if (insightCache && insightCache.key === key && Date.now() - insightCache.at < 5 * 60 * 1000) {
+      return insightCache.text;
+    }
+    if (!apiReady()) return buildAdvice(stats, scope);
+    const label = scope.mode === "week" ? "本周" : scope.mode === "month" ? "本月" : "今日";
+    const withDate = scope.mode !== "day";
+    const rows = scopeItems(Store.state.schedule, scope)
+      .map(
+        (it) =>
+          `${withDate ? (it.date || todayStr()) + " " : ""}${it.startTime}-${it.endTime} ${it.title}${isDone(it) ? "（已完成）" : "（未完成）"}${it.tag ? " /" + it.tag : ""}`
+      )
+      .join("\n");
+    const prompt =
+      `你是用户的私人时间管理洞察助手。今天日期：${todayStr()}。用户当前查看「${label}」概览。\n` +
+      `以下是该周期日程（${withDate ? "日期 " : ""}时间 事项 状态 /分类）：\n${rows || "（该周期暂无日程）"}\n` +
+      `请用最多 3 句话给出：① 一句话总评；② 1-2 条具体洞察（如分类失衡、完成率问题、空闲时段建议）；③ 1 条明确可执行的改进建议。` +
+      `全文 100 字以内，自然中文，不要列表符号、不要加粗、不要 emoji、不要夸张赞美。`;
+    try {
+      const text = await callLLM(
+        [
+          { role: "system", content: "你是严谨又温暖的私人时间管理洞察助手。" },
+          { role: "user", content: prompt },
+        ],
+        { temperature: 0.6, maxTokens: 500, timeoutMs: 30000 }
+      );
+      const clean = text.replace(/\s*\n+\s*/g, " ").trim().slice(0, 200);
+      insightCache = { key, text: clean, at: Date.now() };
+      return clean;
+    } catch (e) {
+      return buildAdvice(stats, scope);
+    }
+  }
+
+  /* ============================================================
      Toast / 浮层工具
      ============================================================ */
   let toastSeq = 0;
@@ -908,6 +953,151 @@
       .map((d) => [d, m[d]]);
   }
 
+  /* ---------- 首页「今日焦点」置顶条（P0）：下一项 / 正在进行 / 过期未打卡 ---------- */
+  function toMin(t) {
+    const p = t.split(":");
+    return +p[0] * 60 + +p[1];
+  }
+  function fmtDurMin(m) {
+    if (m < 60) return m + " 分钟";
+    return m % 60 === 0 ? m / 60 + " 小时" : Math.floor(m / 60) + " 小时 " + (m % 60) + " 分";
+  }
+  function todayFocusHTML() {
+    if (scope.mode !== "day" || scope.anchor !== todayStr()) return "";
+    const list = Store.state.schedule.filter((i) => (i.date || todayStr()) === todayStr());
+    if (!list.length) return "";
+    const nowMin = new Date().getHours() * 60 + new Date().getMinutes();
+    const sorted = list.slice().sort((a, b) => a.startTime.localeCompare(b.startTime));
+    const missed = sorted.filter((i) => !isDone(i) && toMin(i.endTime) < nowMin);
+    const ongoing = sorted.filter((i) => !isDone(i) && toMin(i.startTime) <= nowMin && toMin(i.endTime) >= nowMin);
+    const upcoming = sorted.filter((i) => !isDone(i) && toMin(i.startTime) > nowMin);
+    let icon = "clock",
+      tone = "info",
+      text = "";
+    if (ongoing.length) {
+      icon = "bolt";
+      tone = "ok";
+      text = `正在进行「${ongoing[0].title}」（${ongoing[0].startTime}~${ongoing[0].endTime}），专注完成它`;
+    } else if (upcoming.length) {
+      const n = upcoming[0];
+      const diff = toMin(n.startTime) - nowMin;
+      if (diff <= 30) {
+        icon = "bolt";
+        tone = "ok";
+        text = `下一项「${n.title}」${diff} 分钟后开始（${n.startTime}）`;
+      } else {
+        icon = "clock";
+        tone = "info";
+        text = `距离「${n.title}」还有约 ${fmtDurMin(diff)}，当前空闲${missed.length ? `，另有 ${missed.length} 项过期未打卡可先处理` : "，可安排碎片任务或休息"}`;
+      }
+    } else if (missed.length) {
+      icon = "bolt";
+      tone = "warn";
+      text = `${missed.length} 项日程已过未打卡：${missed.slice(0, 2).map((i) => "「" + i.title + "」").join("、")}${missed.length > 2 ? " 等" : ""}`;
+    } else {
+      icon = "check";
+      tone = "ok";
+      text = "今日安排已全部结束，好好休息";
+    }
+    return `<div class="focus-bar ${tone}" role="button" tabindex="0" data-act="open-planner" title="点击用一句话安排新日程">
+      <span class="fb-ico">${svg(icon)}</span><span class="fb-txt">${esc(text)}</span><span class="fb-go">${svg("chevron")}</span>
+    </div>`;
+  }
+
+  /* ---------- 首页「一句话排期」快捷输入条（P1） ---------- */
+  function quickPlannerBar() {
+    return `<div class="quick-input">
+      <input id="homeQuickInput" class="ai-input" placeholder="一句话排期：明早 8 点背单词 1 小时" autocomplete="off" enterkeyhint="send" />
+      <button class="btn quick-send" id="homeQuickSend" title="AI 排期" aria-label="AI 排期">${svg("sparkle")}</button>
+    </div>`;
+  }
+
+  /* ---------- 首页冲突 / 过载检测（P1）：纯规则，不依赖 API ---------- */
+  let lastIssues = [];
+  function detectHomeIssues(scoped) {
+    const issues = [];
+    const byDate = {};
+    scoped.forEach((i) => {
+      const d = i.date || todayStr();
+      (byDate[d] = byDate[d] || []).push(i);
+    });
+    Object.keys(byDate).forEach((d) => {
+      const items = byDate[d].slice().sort((a, b) => a.startTime.localeCompare(b.startTime));
+      // 时间重叠（相邻不视为冲突）
+      for (let i = 0; i < items.length; i++) {
+        let hit = false;
+        for (let j = i + 1; j < items.length && !hit; j++) {
+          if (items[j].startTime < items[i].endTime && items[j].endTime > items[i].startTime) {
+            issues.push({ type: "conflict", date: d, a: items[i], b: items[j] });
+            hit = true;
+          }
+        }
+      }
+      // 单日超 12 小时视为过载
+      const totalMin = items.reduce((s, it) => s + (parseHM(it.endTime) - parseHM(it.startTime)) * 60, 0);
+      if (totalMin > 720) issues.push({ type: "overload", date: d, hours: totalMin / 60, count: items.length });
+    });
+    return issues;
+  }
+  function issueBarHTML(scoped) {
+    lastIssues = detectHomeIssues(scoped);
+    if (!lastIssues.length) return "";
+    const conflicts = lastIssues.filter((x) => x.type === "conflict").length;
+    const overloads = lastIssues.filter((x) => x.type === "overload");
+    const parts = [];
+    if (conflicts) parts.push(`${conflicts} 处时间重叠`);
+    overloads.forEach((o) => parts.push(`${humanDateLabel(o.date)}安排 ${o.hours.toFixed(0)}h 偏满`));
+    return `<div class="issue-bar" role="button" tabindex="0" data-act="home-issues" title="查看详情与建议">
+      <span class="ib-ico">${svg("bulb")}</span><span class="ib-txt">检测到：${esc(parts.join("；"))}，点此查看</span><span class="ib-go">${svg("chevron")}</span>
+    </div>`;
+  }
+  function openIssuesSheet() {
+    if (!lastIssues.length) return;
+    const label = scope.mode === "week" ? "本周" : scope.mode === "month" ? "本月" : "今日";
+    const rows = lastIssues
+      .map((iss) => {
+        if (iss.type === "conflict")
+          return `<div class="d-row"><span class="ic warn">${svg("bolt")}</span>
+            <span class="d-name">${humanDateLabel(iss.date)} ${iss.a.startTime}-${iss.b.startTime}</span>
+            <span class="d-val">「${esc(iss.a.title)}」×「${esc(iss.b.title)}」重叠</span></div>`;
+        return `<div class="d-row"><span class="ic warn">${svg("bolt")}</span>
+          <span class="d-name">${humanDateLabel(iss.date)}</span>
+          <span class="d-val">安排 ${iss.hours.toFixed(0)}h / ${iss.count} 项，偏满</span></div>`;
+      })
+      .join("");
+    openSheet(
+      `<div class="sheet-head"><div class="h">${label}日程预警</div><button class="x" data-close>${svg("close")}</button></div>
+       <div class="detail-list">${rows}</div>
+       <div class="card-sub mt2">提示：重叠日程可长按编辑调整时间；安排过满时建议拆分或删除低优先级事项。</div>
+       <button class="btn block mt3" data-act="open-planner">${svg("sparkle")} 让 AI 帮我重新安排</button>`
+    );
+  }
+
+  /* ---------- 周/月环比趋势（P2）：较上一周期专注时长变化，纯离线 ---------- */
+  function trendDelta() {
+    if (scope.mode === "day") return null;
+    const cur = computeStatsFor(scopeItems(Store.state.schedule, scope));
+    let prev = null;
+    if (scope.mode === "week") {
+      prev = computeStatsFor(scopeItems(Store.state.schedule, { mode: "week", anchor: addDays(scope.anchor, -7) }));
+    } else {
+      const d = parseDate(scope.anchor);
+      const prevAnchor = fmtDate(new Date(d.getFullYear(), d.getMonth() - 1, 1));
+      prev = computeStatsFor(scopeItems(Store.state.schedule, { mode: "month", anchor: prevAnchor }));
+    }
+    if (!prev || prev.totalHours <= 0 || cur.totalHours <= 0) return null;
+    const unit = scope.mode === "week" ? "周" : "月";
+    const diff = cur.totalHours - prev.totalHours;
+    // 上一周期基数太小时百分比失真，改用绝对值差值
+    if (prev.totalHours < 4) {
+      const d = Math.round(diff * 10) / 10;
+      return { label: `较上${unit}`, text: `${d > 0 ? "+" : ""}${d}h`, up: d >= 0 };
+    }
+    const pct = Math.round((diff / prev.totalHours) * 100);
+    if (pct === 0) return { label: `较上${unit}`, text: "持平", up: true };
+    return { label: `较上${unit}`, text: `${pct > 0 ? "↑" : "↓"} ${Math.abs(pct)}%`, up: pct > 0 };
+  }
+
   function renderHome() {
     const scoped = scopeItems(Store.state.schedule, scope);
     const stats = computeStatsFor(scoped);
@@ -950,6 +1140,9 @@
     }
 
     const schedTitle = scope.mode === "day" ? "今日日程" : scope.mode === "week" ? "本周日程" : "本月日程";
+    const trend = trendDelta();
+    const focusBar = todayFocusHTML();
+    const issueBar = issueBarHTML(scoped);
 
     view.innerHTML = `<div class="page">
       <div class="head">
@@ -960,8 +1153,15 @@
 
       ${scopeBar()}
 
+      ${quickPlannerBar()}
+
+      ${focusBar}
+      ${issueBar}
+
       <div class="card">
-        <div class="card-title">${svg("clock")} 时间分配</div>
+        <div class="card-title">${svg("clock")} 时间分配
+          ${trend ? `<span class="trend ${trend.up ? "up" : "down"}">${esc(trend.text)}<em>${esc(trend.label)}</em></span>` : ""}
+        </div>
         <div class="ring-wrap mt2">
           <div class="ring" id="ring"></div>
           <div class="ring-legend">${ringLegend}</div>
@@ -983,7 +1183,8 @@
         </div>
         <div class="advice">
           <span class="bulb">${svg("bulb")}</span>
-          <div class="txt">${esc(advice)}</div>
+          <div class="txt" id="homeAdviceTxt">${esc(advice)}</div>
+          ${apiReady() ? '<span class="ai-badge" title="AI 实时生成">AI</span>' : ""}
         </div>
       </div>
     </div>`;
@@ -991,6 +1192,14 @@
     renderRing($("#ring"), stats.timeDist, stats.totalHours);
     wireHome();
     scheduleFreshClear();
+    // AI 洞察异步升级：先展示离线建议，模型返回后无缝替换（带缓存）
+    if (apiReady()) {
+      const txt = $("#homeAdviceTxt");
+      if (txt)
+        genInsight(stats).then((text) => {
+          if (txt.isConnected) txt.textContent = text;
+        });
+    }
   }
 
   function statCell(icon, k, v, key) {
@@ -1041,6 +1250,27 @@
 
     if (hasFresh()) {
       $$(".tab-item", $("#tabbar")).forEach((t, i) => t.classList.toggle("has-badge", i === 0));
+    }
+
+    // 首页「一句话排期」快捷入口（P1）：回车 / 点 ✨ → 打开 AI 规划并自动发送
+    const qi = $("#homeQuickInput");
+    if (qi) {
+      const sendQuick = () => {
+        const v = qi.value.trim();
+        if (!v) {
+          qi.focus();
+          return;
+        }
+        openPlanner(v, true);
+      };
+      qi.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          sendQuick();
+        }
+      });
+      const qs = $("#homeQuickSend");
+      if (qs) qs.addEventListener("click", sendQuick);
     }
   }
 
@@ -1445,7 +1675,7 @@
   let plannerDraft = null;
   let plannerLoading = false;
 
-  function openPlanner(prefill) {
+  function openPlanner(prefill, autoSend) {
     plannerDraft = null;
     plannerLoading = false;
     const prefillDate = relDateFromText(prefill) || todayStr();
@@ -1478,6 +1708,12 @@
           const send = el.querySelector("#plannerSend");
           const pd = el.querySelector("#plannerDate");
           setTimeout(() => input.focus(), 50);
+          // 首页快捷输入：打开即自动发送，无需二次回车
+          if (prefill && autoSend) {
+            setTimeout(() => {
+              if (input.value.trim()) doPlannerSend();
+            }, 180);
+          }
           input.addEventListener("keydown", (e) => {
             if (e.key === "Enter") doPlannerSend();
           });
@@ -1980,13 +2216,20 @@
     } else if (key === "advice") {
       title = `${label}AI 优化建议`;
       const advice = buildAdvice(stats, scope);
-      body = `<div class="report-body"><div>${esc(advice).replace(/\n/g, "<br>")}</div></div>
+      body = `<div class="report-body"><div id="adviceDetailTxt">${esc(advice).replace(/\n/g, "<br>")}</div></div>
         <button class="btn block mt3" data-act="gen-report">${svg("sparkle")} 生成完整日报</button>`;
     }
-    openSheet(
+    const sheetEl = openSheet(
       `<div class="sheet-head"><div class="h">${title}</div><button class="x" data-close>${svg("close")}</button></div>
        <div class="mt1">${body}</div>`
     );
+    // AI 优化建议详情：异步升级为模型生成的真实洞察（与首页同源缓存）
+    if (key === "advice" && apiReady()) {
+      genInsight(stats).then((text) => {
+        const el = sheetEl && sheetEl.querySelector("#adviceDetailTxt");
+        if (el && el.isConnected) el.textContent = text;
+      });
+    }
   }
 
   function openTagDetail(tag) {
@@ -2746,6 +2989,9 @@
         break;
       case "gen-report":
         openReport();
+        break;
+      case "home-issues":
+        openIssuesSheet();
         break;
       case "save-api":
         Store.notify();

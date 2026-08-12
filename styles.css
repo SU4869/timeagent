@@ -379,6 +379,45 @@ ul { list-style: none; }
 .advice .bulb svg { width: 20px; height: 20px; stroke: currentColor; fill: none; stroke-width: 2; }
 .advice .txt { font-size: 12.5px; color: var(--t2); line-height: 1.65; flex: 1; }
 .advice .act { margin-top: 8px; }
+.advice .ai-badge { flex: 0 0 auto; font-size: 10px; font-weight: 800; color: var(--primary-strong); background: var(--surface-solid); border: 1px solid var(--line); border-radius: var(--r-pill); padding: 2px 7px; letter-spacing: .5px; align-self: center; }
+.advice .txt:empty::after { content: "AI 正在思考…"; color: var(--t3); }
+
+/* ===================== 首页：一句话排期快捷条 ===================== */
+.quick-input { display: flex; gap: 8px; margin: 0 0 12px; }
+.quick-input .ai-input { height: 44px; font-size: 13.5px; }
+.quick-input .quick-send { width: 48px; height: 44px; padding: 0; flex: 0 0 auto; border-radius: var(--r-pill); }
+.quick-input .quick-send svg { width: 18px; height: 18px; stroke: currentColor; fill: none; stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; }
+
+/* ===================== 首页：今日焦点条 ===================== */
+.focus-bar { display: flex; align-items: center; gap: 10px; border-radius: var(--r-md); padding: 11px 13px; margin: 0 0 10px; cursor: pointer; transition: transform .12s ease; border: 1px solid var(--line); }
+.focus-bar:active { transform: scale(.985); }
+.focus-bar.ok { background: color-mix(in srgb, var(--ok, #10B981) 10%, var(--surface-solid)); }
+.focus-bar.warn { background: color-mix(in srgb, var(--warning, #F5A623) 12%, var(--surface-solid)); }
+.focus-bar.info { background: var(--primary-soft); }
+.focus-bar .fb-ico { flex: 0 0 auto; width: 26px; height: 26px; border-radius: 9px; display: grid; place-items: center; }
+.focus-bar.ok .fb-ico { background: color-mix(in srgb, var(--ok, #10B981) 16%, var(--surface-solid)); color: var(--ok, #10B981); }
+.focus-bar.warn .fb-ico { background: color-mix(in srgb, var(--warning, #F5A623) 18%, var(--surface-solid)); color: var(--warning, #F5A623); }
+.focus-bar.info .fb-ico { background: var(--surface-solid); color: var(--primary); }
+.focus-bar .fb-ico svg { width: 15px; height: 15px; stroke: currentColor; fill: none; stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round; }
+.focus-bar .fb-txt { flex: 1; font-size: 12.5px; color: var(--t2); line-height: 1.5; }
+.focus-bar .fb-go { color: var(--t3); display: flex; }
+.focus-bar .fb-go svg { width: 15px; height: 15px; stroke: currentColor; fill: none; stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round; }
+
+/* ===================== 首页：冲突 / 过载预警条 ===================== */
+.issue-bar { display: flex; align-items: center; gap: 10px; border-radius: var(--r-md); padding: 11px 13px; margin: 0 0 10px; cursor: pointer; transition: transform .12s ease; background: color-mix(in srgb, var(--warning, #F5A623) 12%, var(--surface-solid)); border: 1px solid color-mix(in srgb, var(--warning, #F5A623) 35%, transparent); }
+.issue-bar:active { transform: scale(.985); }
+.issue-bar .ib-ico { flex: 0 0 auto; width: 26px; height: 26px; border-radius: 9px; display: grid; place-items: center; background: color-mix(in srgb, var(--warning, #F5A623) 18%, var(--surface-solid)); color: var(--warning, #F5A623); }
+.issue-bar .ib-ico svg { width: 15px; height: 15px; stroke: currentColor; fill: none; stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round; }
+.issue-bar .ib-txt { flex: 1; font-size: 12.5px; color: var(--t2); line-height: 1.5; }
+.issue-bar .ib-go { color: var(--t3); display: flex; }
+.issue-bar .ib-go svg { width: 15px; height: 15px; stroke: currentColor; fill: none; stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round; }
+.issue-bar + .quick-input { margin-top: 0; }
+
+/* ===================== 首页：环比趋势徽标 ===================== */
+.trend { margin-left: 8px; font-size: 11px; font-weight: 700; border-radius: var(--r-pill); padding: 2px 8px; display: inline-flex; align-items: center; gap: 3px; vertical-align: 2px; }
+.trend.up { color: var(--ok, #10B981); background: color-mix(in srgb, var(--ok, #10B981) 12%, var(--surface-solid)); }
+.trend.down { color: var(--warning, #F5A623); background: color-mix(in srgb, var(--warning, #F5A623) 12%, var(--surface-solid)); }
+.trend em { font-style: normal; opacity: .75; font-weight: 600; }
 
 /* ===================== 日程页：添加表单 ===================== */
 .form-row { margin-bottom: 16px; }
@@ -751,6 +790,7 @@ ul { list-style: none; }
 .detail-list .d-row .ic { flex: 0 0 auto; display: inline-flex; color: var(--t3); }
 .detail-list .d-row .ic svg, .detail-list .d-row .ic.ok svg { width: 15px; height: 15px; stroke: currentColor; fill: none; stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round; }
 .detail-list .d-row .ic.ok { color: var(--primary); }
+.detail-list .d-row .ic.warn { color: var(--warning); }
 .detail-list .d-name { flex: 1; color: var(--t1); font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .detail-list .d-name.done { text-decoration: line-through; color: var(--t3); }
 .detail-list .d-val { color: var(--t2); font-weight: 700; font-size: 12.5px; white-space: nowrap; }
