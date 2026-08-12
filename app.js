@@ -731,16 +731,16 @@
      - 5 分钟缓存，避免反复切换范围重复调用浪费 token
      - 无 Key / 调用失败 → 回退离线 buildAdvice，保证零依赖
      ============================================================ */
-  let insightCache = null;
+  // 多槽缓存：按「日/周/月 + 日期 + 数据指纹」各自缓存，切换范围后切回能直接命中（避免离线闪屏 + 重复消耗 token）
+  const insightCache = new Map();
   function insightKey(stats) {
     const sc = scope;
     return `${sc.mode}:${sc.anchor}:${Store.state.schedule.length}:${stats.completedCount}:${stats.totalCount}:${Math.round(stats.totalHours * 10)}`;
   }
   async function genInsight(stats) {
     const key = insightKey(stats);
-    if (insightCache && insightCache.key === key && Date.now() - insightCache.at < 5 * 60 * 1000) {
-      return insightCache.text;
-    }
+    const hit = insightCache.get(key);
+    if (hit && Date.now() - hit.at < 5 * 60 * 1000) return hit.text;
     if (!apiReady()) return buildAdvice(stats, scope);
     const label = scope.mode === "week" ? "本周" : scope.mode === "month" ? "本月" : "今日";
     const withDate = scope.mode !== "day";
@@ -764,7 +764,8 @@
         { temperature: 0.6, maxTokens: 500, timeoutMs: 30000 }
       );
       const clean = text.replace(/\s*\n+\s*/g, " ").trim().slice(0, 200);
-      insightCache = { key, text: clean, at: Date.now() };
+      insightCache.set(key, { text: clean, at: Date.now() });
+      if (insightCache.size > 12) insightCache.clear(); // 防止跨天累积无限增长
       return clean;
     } catch (e) {
       return buildAdvice(stats, scope);
