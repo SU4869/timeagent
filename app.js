@@ -1167,9 +1167,115 @@
     );
   }
 
+  /* ============================================================
+     首页 AI 行动卡（agent 主动观察引擎，纯本地规则零 token）
+     - 持续检测数据模式：过载 / 深夜任务 / 连续未完成 / 完成率下滑 / 待办堆积 / 空闲时段
+     - 发现问题 → 给一条可点击执行的动作（打开规划浮层预填 / 看冲突 / 生成日报）
+     ============================================================ */
+  function detectAgentActions(scoped, stats) {
+    const t = todayStr();
+    const actions = [];
+    const isToday = scope.mode === "day" && scope.anchor === t;
+    const nowH = new Date().getHours();
+    // 1) 今日过载：已规划 > 10h（区别于预警条 >12h，行动卡更敏感）
+    if (isToday && stats.totalHours > 10)
+      actions.push({
+        icon: "bolt",
+        tone: "warn",
+        title: "今天安排偏满",
+        desc: `已规划 ${stats.totalHours.toFixed(1)} 小时，记得留出休息才能持续高效。`,
+        act: "planner",
+        prefill: "今晚安排 30 分钟休息",
+        label: "安排休息",
+      });
+    // 2) 深夜任务：21 点后开始
+    const night = scoped.filter((i) => !isDone(i) && parseHM(i.startTime) >= 21);
+    if (night.length)
+      actions.push({
+        icon: "moon",
+        tone: "warn",
+        title: "有深夜任务",
+        desc: `${night.slice(0, 2).map((i) => "「" + i.title + "」").join("、")}${night.length > 2 ? " 等" : ""} 在 21 点后开始，容易挤压休息。`,
+        act: "planner",
+        prefill: `把${night[0].title}改到 20 点前`,
+        label: "调早一点",
+      });
+    // 3) 连续多日未完成：近 3 天同标题出现 ≥2 次且未打卡
+    const miss = {};
+    Store.state.schedule.forEach((i) => {
+      const d = i.date || t;
+      if (!isDone(i) && d >= addDays(t, -3) && d <= t) miss[i.title] = (miss[i.title] || 0) + 1;
+    });
+    const missTop = Object.entries(miss).sort((a, b) => b[1] - a[1])[0];
+    if (missTop && missTop[1] >= 2)
+      actions.push({
+        icon: "repeat",
+        tone: "warn",
+        title: `「${missTop[0]}」连续 ${missTop[1]} 天没完成`,
+        desc: "总是排在后面容易被挤掉，建议挪到精力最好的时段。",
+        act: "planner",
+        prefill: `把${missTop[0]}改到早上 8 点`,
+        label: "调时间",
+      });
+    // 4) 完成率下滑：近 7 天 vs 前 7 天，降幅 ≥25%
+    const rateIn = (from, to) => {
+      const items = [];
+      let d = from,
+        g = 0;
+      while (d <= to && g < 400) {
+        scopeItems(Store.state.schedule, { mode: "day", anchor: d }).forEach((i) => items.push(i));
+        d = addDays(d, 1);
+        g++;
+      }
+      if (!items.length) return null;
+      return items.filter((i) => isDone(i)).length / items.length;
+    };
+    const r1 = rateIn(addDays(t, -13), addDays(t, -7));
+    const r2 = rateIn(addDays(t, -6), t);
+    if (r1 !== null && r2 !== null && r1 - r2 >= 0.25 && r2 < 0.6)
+      actions.push({
+        icon: "chart",
+        tone: "info",
+        title: "近一周完成率下滑",
+        desc: `从 ${Math.round(r1 * 100)}% 降到 ${Math.round(r2 * 100)}%，看看是不是安排太满或目标定高了。`,
+        act: "planner",
+        prefill: "重新安排今天的日程",
+        label: "重新规划",
+      });
+    // 5) 午后仍有 ≥3 项待办
+    if (isToday && nowH >= 12 && scoped.filter((i) => !isDone(i)).length >= 3)
+      actions.push({
+        icon: "clock",
+        tone: "info",
+        title: "今天还有不少待办",
+        desc: "现在重新排一下剩余时间，能明显提高完成率。",
+        act: "planner",
+        prefill: "重新安排今天剩余日程",
+        label: "重排剩余",
+      });
+    // 6) 有 ≥1h 整块空闲
+    if (actions.length < 3) {
+      const slots = isToday ? freeSlots() : [];
+      const longSlot = slots.find((s) => {
+        const [a, b] = s.split(" - ");
+        return parseHM(b) - parseHM(a) >= 1;
+      });
+      if (longSlot)
+        actions.push({
+          icon: "headphones",
+          tone: "ok",
+          title: "有整块空闲时间",
+          desc: `${longSlot} 空出来，适合学习充电或放松。`,
+          act: "planner",
+          prefill: `在${longSlot.split(" - ")[0]}安排 1 小时学习`,
+          label: "安排它",
+        });
+    }
+    return actions.slice(0, 3);
+  }
+
   /* ---------- 周/月环比趋势（P2）：较上一周期专注时长变化，纯离线 ---------- */
-  function trendDelta() {
-    if (scope.mode === "day") return null;
+  function trendDelta() {    if (scope.mode === "day") return null;
     const cur = computeStatsFor(scopeItems(Store.state.schedule, scope));
     let prev = null;
     if (scope.mode === "week") {
@@ -1197,6 +1303,7 @@
     const stats = computeStatsFor(scoped);
     const t = scopeTitle(scope);
     const advice = buildAdvice(stats, scope);
+    const agentActions = detectAgentActions(scoped, stats);
 
     const ringLegend = stats.timeDist.length
       ? stats.timeDist
@@ -1280,6 +1387,16 @@
           <div class="txt" id="homeAdviceTxt">${esc(advice)}</div>
           <span class="src-badge off" id="homeAdviceBadge" title="当前内容来源">本地规则</span>
         </div>
+        ${agentActions.length ? `<div class="agent-actions mt2">${agentActions
+          .map(
+            (a) => `
+          <div class="agent-action ${a.tone}" role="button" tabindex="0" data-act="ai-act" data-kind="${a.act}" data-prefill="${esc(a.prefill || "")}" title="点击${a.label}">
+            <span class="aa-ico">${svg(a.icon)}</span>
+            <div class="aa-body"><div class="aa-t">${esc(a.title)}</div><div class="aa-d">${esc(a.desc)}</div></div>
+            <span class="aa-btn">${esc(a.label)}</span>
+          </div>`
+          )
+          .join("")}</div>` : ""}
       </div>
     </div>`;
 
@@ -3355,6 +3472,15 @@ ${scheduleContext(Store.state.prefs.chatMemory === "custom" ? { from: Store.stat
       case "open-planner":
         openPlanner("");
         break;
+      case "ai-act": {
+        // 首页 AI 行动卡：按 kind 执行（默认打开规划浮层并预填）
+        const kind = t.dataset.kind;
+        const prefill = t.dataset.prefill || "";
+        if (kind === "issues") openIssuesSheet();
+        else if (kind === "report") openReport();
+        else openPlanner(prefill, false);
+        break;
+      }
       case "set-scope":
         scope.mode = t.dataset.mode || "day";
         renderCurrent();

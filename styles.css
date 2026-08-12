@@ -400,6 +400,23 @@ ul { list-style: none; }
 .mem-opt.sel { border-color: var(--primary); background: var(--primary-soft); }
 .mem-opt.sel .mo-desc { color: var(--primary-strong); }
 
+/* 首页 AI 行动卡（agent 主动观察 → 可执行动作） */
+.agent-actions { display: flex; flex-direction: column; gap: 8px; }
+.agent-action { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-radius: var(--r-md); background: var(--surface); border: 1px solid var(--line); cursor: pointer; transition: transform .12s, border-color .15s, box-shadow .15s; }
+.agent-action:active { transform: scale(.98); }
+.agent-action.warn { border-color: rgba(245, 158, 11, .4); }
+.agent-action.info { border-color: rgba(37, 99, 235, .35); }
+.agent-action.ok { border-color: rgba(34, 197, 94, .35); }
+.aa-ico { width: 30px; height: 30px; flex: 0 0 auto; display: flex; align-items: center; justify-content: center; border-radius: 9px; background: var(--surface-2); color: var(--t2); }
+.agent-action.warn .aa-ico { color: #D97706; background: rgba(245, 158, 11, .12); }
+.agent-action.info .aa-ico { color: var(--primary); background: var(--primary-soft); }
+.agent-action.ok .aa-ico { color: var(--ok, #16A34A); background: rgba(34, 197, 94, .12); }
+.aa-ico svg { width: 17px; height: 17px; stroke: currentColor; fill: none; stroke-width: 2; }
+.aa-body { flex: 1; min-width: 0; }
+.aa-t { font-size: 13px; font-weight: 700; color: var(--t1); }
+.aa-d { font-size: 11.5px; color: var(--t3); margin-top: 2px; line-height: 1.5; }
+.aa-btn { flex: 0 0 auto; font-size: 11px; font-weight: 700; color: var(--primary-strong); background: var(--surface-solid); border: 1px solid var(--line); border-radius: var(--r-pill); padding: 4px 10px; }
+
 /* ===================== 首页：一句话排期快捷条 ===================== */
 .quick-input { display: flex; gap: 8px; margin: 0 0 12px; }
 .quick-input .ai-input { height: 44px; font-size: 13.5px; }
