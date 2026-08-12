@@ -3369,6 +3369,30 @@ ${scheduleContext(3)}
       return false;
     };
     initReminders();
+    // 软键盘兼容（安卓 WebView edge-to-edge）：输入框聚焦时滚到可视区中央；
+    // visualViewport 变化（键盘弹出/收起）时再校准一次，避免键盘遮挡已输入内容
+    document.addEventListener("focusin", (e) => {
+      const t = e.target;
+      if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA")) {
+        setTimeout(() => {
+          try {
+            if (document.activeElement === t) t.scrollIntoView({ block: "center" });
+          } catch (_) {}
+        }, 80);
+      }
+    });
+    if (window.visualViewport) {
+      window.visualViewport.addEventListener("resize", () => {
+        const t = document.activeElement;
+        if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA")) {
+          setTimeout(() => {
+            try {
+              t.scrollIntoView({ block: "center" });
+            } catch (_) {}
+          }, 40);
+        }
+      });
+    }
     // 跨页面刷新联动：store 变化且不在当前页时，回到首页刷新角标
     Store.subscribe(() => {
       $$(".tab-item", $("#tabbar")).forEach((t, i) => t.classList.toggle("has-badge", i === 0 && hasFresh()));
