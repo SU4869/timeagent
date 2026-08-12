@@ -713,23 +713,69 @@
     return slots;
   }
 
-  // 生成近 N 天日程上下文（供 AI 感知用户真实日程，避免模型臆造/撞期）
-  function scheduleContext(days = 3) {
+  // 生成日程上下文（供 AI 感知用户真实日程，避免模型臆造/撞期）
+  // range: "day"=仅今日 | "week"=本周 | "month"=本月 | "all"=全局摘要 | {from,to}=自定义区间
+  const CHAT_MEMORY_OPTS = [
+    { key: "day", label: "仅当日" },
+    { key: "week", label: "本周" },
+    { key: "month", label: "本月" },
+    { key: "all", label: "全局" },
+    { key: "custom", label: "自定义" },
+  ];
+  function chatMemoryLabel(key) {
+    const o = CHAT_MEMORY_OPTS.find((x) => x.key === key);
+    return o ? o.label : "本周";
+  }
+  function scheduleContext(range) {
     const t = todayStr();
-    const lines = [];
-    for (let i = 0; i < days; i++) {
-      const d = addDays(t, i);
+    const dayLine = (d, label) => {
       const items = scopeItems(Store.state.schedule, { mode: "day", anchor: d });
-      if (!items.length) continue;
-      const label = d === t ? "今天" : d === addDays(t, 1) ? "明天" : humanDateLabel(d);
+      if (!items.length) return "";
       const row = items
         .slice()
         .sort((a, b) => (a.startTime || "").localeCompare(b.startTime || ""))
         .map((it) => `${it.startTime}-${it.endTime} ${it.title}${isDone(it) ? "（已完成）" : ""}${it.tag ? " /" + it.tag : ""}`)
         .join("；");
-      lines.push(`${label}：${row}`);
+      return `${label}：${row}`;
+    };
+    // 区间明细：逐日展开，上限 40 条防 token 爆炸
+    const rangeLines = (from, to, label) => {
+      const out = [];
+      let d = from;
+      let guard = 0;
+      while (d <= to && guard < 800 && out.length < 40) {
+        const items = scopeItems(Store.state.schedule, { mode: "day", anchor: d });
+        items
+          .slice()
+          .sort((a, b) => (a.startTime || "").localeCompare(b.startTime || ""))
+          .forEach((it) =>
+            out.push(`${d} ${it.startTime}-${it.endTime} ${it.title}${isDone(it) ? "（已完成）" : ""}${it.tag ? " /" + it.tag : ""}`)
+          );
+        d = addDays(d, 1);
+        guard++;
+      }
+      const total = Store.state.schedule.length;
+      return out.length
+        ? `${label}（共 ${total} 条记录，展示前 ${out.length} 条）：\n${out.join("\n")}`
+        : `${label}暂无日程`;
+    };
+    if (range === "day") return dayLine(t, "今天") || "今天暂无日程";
+    if (range === "week") {
+      const [a, b] = weekBounds(t);
+      return rangeLines(a, b, `本周（${a}~${b}）`);
     }
-    return lines.length ? lines.join("\n") : "（近三天暂无日程）";
+    if (range === "month") {
+      const [a, b] = monthBounds(t);
+      return rangeLines(a, b, `本月（${a}~${b}）`);
+    }
+    if (range === "all") {
+      const total = Store.state.schedule.length;
+      const summary = `全局共 ${total} 条日程记录`;
+      const recent = rangeLines(addDays(t, -3), addDays(t, 14), "近期（前3天~后14天）");
+      return `${summary}\n${recent}`;
+    }
+    if (range && range.from && range.to) return rangeLines(range.from, range.to, `自定义区间（${range.from}~${range.to}）`);
+    return dayLine(t, "今天") || "今天暂无日程";
   }
 
   function buildAdvice(stats, sc) {
@@ -2803,10 +2849,16 @@
     layer.id = "chatLayer";
     layer.style.cssText =
       "position:absolute;inset:0;z-index:40;background:var(--bg-1);display:flex;flex-direction:column;animation:pageIn .3s ease";
+    // 记忆范围（默认本周）
+    const memKey = Store.state.prefs.chatMemory || "week";
+    const memFrom = Store.state.prefs.chatMemoryFrom || "";
+    const memTo = Store.state.prefs.chatMemoryTo || "";
+    const memBtnText = memKey === "custom" ? (memFrom && memTo ? `记忆:${memFrom.slice(5)}~${memTo.slice(5)}` : "记忆:自定义") : `记忆:${chatMemoryLabel(memKey)}`;
     layer.innerHTML = `<div class="head" style="padding:12px 16px;margin:0;background:var(--surface-solid);border-bottom:1px solid var(--line)">
         <button class="icon-btn" id="chatBack">${svg("back")}</button>
         <div class="title" style="font-size:17px">AI 时间管家</div>
         <div class="spacer"></div>
+        <span class="tag" id="chatMemTag" role="button" tabindex="0" title="AI 记忆范围：能看到多久的日程" style="background:var(--primary-soft);color:var(--primary-strong);cursor:pointer">${memBtnText}</span>
         <span class="tag" id="chatModeTag" style="background:${apiReady() ? "var(--ok-soft, #E8F5E9)" : "var(--primary-soft)"};color:${apiReady() ? "var(--ok, #2E7D32)" : "var(--primary-strong)"}">${apiReady() ? "AI 在线" : "离线助手"}</span>
       </div>
       <div id="chatList" style="flex:1;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:12px"></div>
@@ -2818,6 +2870,68 @@
     const list = layer.querySelector("#chatList");
     const input = layer.querySelector("#chatInput");
     const send = layer.querySelector("#chatSend");
+    const memTag = layer.querySelector("#chatMemTag");
+
+    // 记忆范围选择：仅当日 / 本周 / 本月 / 全局 / 自定义（起止日期）
+    function openMemPicker() {
+      const cur = Store.state.prefs.chatMemory || "week";
+      openSheet(
+        `<div class="sheet-head"><div class="h">AI 记忆范围</div><button class="x" data-close>${svg("close")}</button></div>
+         <div class="card-sub">AI 能看到多久的日程数据？切换后对话立即生效。</div>
+         <div class="mem-opts mt2">
+           ${CHAT_MEMORY_OPTS.map(
+             (o) =>
+               `<div class="mem-opt ${o.key === cur ? "sel" : ""}" data-mem="${o.key}" role="button" tabindex="0">${o.label}<span class="mo-desc">${
+                 o.key === "day" ? "只看今天" : o.key === "week" ? "本周 7 天" : o.key === "month" ? "本月全部" : o.key === "all" ? "全局摘要+近期明细" : "指定起止日期"
+               }</span></div>`
+           ).join("")}
+         </div>
+         <div id="memCustom" class="mt2" ${cur === "custom" ? "" : "hidden"}>
+           <div class="flex" style="gap:8px;align-items:center">
+             <input type="date" class="date-input" id="memFrom" value="${Store.state.prefs.chatMemoryFrom || ""}" aria-label="开始日期" />
+             <span class="muted">~</span>
+             <input type="date" class="date-input" id="memTo" value="${Store.state.prefs.chatMemoryTo || ""}" aria-label="结束日期" />
+           </div>
+           <button class="btn block mt2" id="memCustomApply">应用自定义范围</button>
+         </div>`,
+        {
+          onOpen: (el) => {
+            const apply = (key) => {
+              Store.state.prefs.chatMemory = key;
+              if (key === "custom") {
+                const f = el.querySelector("#memFrom").value;
+                const t = el.querySelector("#memTo").value;
+                if (!f || !t || f > t) {
+                  toast("请选择有效的起止日期", "warn");
+                  return;
+                }
+                Store.state.prefs.chatMemoryFrom = f;
+                Store.state.prefs.chatMemoryTo = t;
+              }
+              Store.notify();
+              const label =
+                key === "custom"
+                  ? `记忆:${(Store.state.prefs.chatMemoryFrom || "").slice(5)}~${(Store.state.prefs.chatMemoryTo || "").slice(5)}`
+                  : `记忆:${chatMemoryLabel(key)}`;
+              if (memTag) memTag.textContent = label;
+              closeSheet();
+              toast(`记忆范围已切换：${key === "custom" ? "自定义区间" : chatMemoryLabel(key)} ✅`, "ok");
+            };
+            el.querySelectorAll(".mem-opt").forEach((o) =>
+              o.addEventListener("click", () => {
+                el.querySelectorAll(".mem-opt").forEach((x) => x.classList.toggle("sel", x === o));
+                const k = o.dataset.mem;
+                if (k === "custom") el.querySelector("#memCustom").hidden = false;
+                else apply(k);
+              })
+            );
+            const cBtn = el.querySelector("#memCustomApply");
+            if (cBtn) cBtn.addEventListener("click", () => apply("custom"));
+          },
+        }
+      );
+    }
+    if (memTag) memTag.addEventListener("click", openMemPicker);
 
     // 恢复历史
     Store.state.chat.forEach((m) => list.appendChild(chatBubble(m)));
@@ -2865,14 +2979,15 @@
                 {
                   role: "system",
                   content: `你是 TimeAgent 智能时间管家，用简洁友好的中文回答。今天日期：${todayStr()}。
-用户近期真实日程如下，回答日程相关问题时必须基于它，严禁臆造未列出的日程或数字：
-${scheduleContext(3)}
+你有权查看和操作 app 内全部日程数据（查询任意日期、添加、删除、打卡、改期）。
+当前记忆范围：${(Store.state.prefs.chatMemory === "custom" ? `自定义区间 ${Store.state.prefs.chatMemoryFrom}~${Store.state.prefs.chatMemoryTo}` : chatMemoryLabel(Store.state.prefs.chatMemory || "week"))}。范围内真实日程如下（范围外数据当前不可见，用户问到时如实说明，或建议切换记忆范围）：
+${scheduleContext(Store.state.prefs.chatMemory === "custom" ? { from: Store.state.prefs.chatMemoryFrom, to: Store.state.prefs.chatMemoryTo } : Store.state.prefs.chatMemory || "week")}
 你可以帮用户添加/删除/打卡日程、查询安排、查询空闲时间，也可以闲聊。若用户要求安排日程（含事项和时间），先给一句简短确认，然后在回复末尾输出一行排期数据：
-【排期】{"tasks":[{"title":"日程名","startTime":"HH:MM","endTime":"HH:MM","tag":"学习","desc":"可选"}]}【/排期】
+【排期】{"tasks":[{"title":"日程名","startTime":"HH:MM","endTime":"HH:MM","tag":"学习","desc":"可选","date":"YYYY-MM-DD(可选,默认今天)"}]}【/排期】
 规则：时间用 24 小时制；tag 只能从 [学习,工作,运动,饮食,休息,社交,其他] 中选一个；结束时间未说则按常见时长合理推断；日期默认今天，用户说"明天/后天"要换算成具体日期；若新任务与上面已有日程时间重叠，请自动微调 15-30 分钟避开冲突。没有排期需求时不要输出【排期】标记。
 若用户要求删除/标记完成/改期已有日程，则在回复末尾单独输出一行：
-【操作】{"type":"delete|done|move","title":"日程名","startTime":"HH:MM"}【/操作】
-（delete=删除，done=打卡完成，move=改期需给新 startTime；按上面日程中的标题匹配，【操作】与【排期】不要同时输出，没有匹配的日程时也要输出该行）。`,
+【操作】{"type":"delete|done|move","title":"日程名","date":"YYYY-MM-DD(可选,精确匹配某天)","startTime":"HH:MM(仅move需要)","repeatAll":true(可选,删除重复日程的整个系列)}【/操作】
+（delete=删除，done=打卡完成，move=改期需给新 startTime；按上面日程中的标题匹配，同名日程可用 date 精确到某天；重复日程删除默认删整个系列并告知用户；【操作】与【排期】不要同时输出，没有匹配的日程时也要输出该行并在正文说明）。`,
                 },
                 ...history,
                 { role: "user", content: text },
@@ -2951,16 +3066,20 @@ ${scheduleContext(3)}
               ops.forEach((op) => {
                 const t = op && op.title ? String(op.title).trim() : "";
                 if (!t) return;
-                const item = Store.state.schedule.find((i) => i.title.includes(t) || t.includes(i.title));
+                const date = op && op.date ? String(op.date).trim() : "";
+                const matches = Store.state.schedule.filter((i) => i.title.includes(t) || t.includes(i.title));
+                // 同名多实例：优先匹配指定日期，否则取第一个
+                const item = (date ? matches.find((i) => (i.date || "") === date) : null) || matches[0];
                 if (op.type === "delete") {
                   if (item) {
+                    const isRepeat = item.repeat && item.repeat !== "none";
                     Store.removeSchedule(item.id);
-                    results.push(`已删除「${item.title}」`);
+                    results.push(isRepeat ? `已删除「${item.title}」（重复日程，整个系列一并移除）` : `已删除「${item.title}」`);
                   } else results.push(`没找到「${t}」`);
                 } else if (op.type === "done") {
                   if (item) {
-                    Store.toggleSchedule(item.id, item.date);
-                    results.push(`已把「${item.title}」标记为${isDone(item) ? "未完成" : "已完成"}`);
+                    Store.toggleSchedule(item.id, date || item.date);
+                    results.push(`已把「${item.title}」标记为${isDone(item) ? "未完成" : "已完成"}${date ? `（${date}）` : ""}`);
                   } else results.push(`没找到「${t}」`);
                 } else if (op.type === "move") {
                   const ns = normTime(op.startTime);
@@ -3027,15 +3146,26 @@ ${scheduleContext(3)}
   // 离线对话助手：解析意图 → 增删改查 + 自然语言回复
   function localChatReply(text) {
     const lower = text;
-    // 删除
+    // 删除（支持日期限定 + 多候选确认）
     if (/删除|去掉|取消/.test(lower) && !/添加|新建|安排/.test(lower)) {
+      let date = "";
+      if (/后天/.test(lower)) date = addDays(todayStr(), 2);
+      else if (/明天|明早|明晚/.test(lower)) date = addDays(todayStr(), 1);
+      else if (/今天|今日/.test(lower)) date = todayStr();
       const name = lower.replace(/^(请|帮|我)?(删除|去掉|取消)/, "").replace(/[。.，,吗？?\s]/g, "").trim();
-      const idx = Store.state.schedule.findIndex((i) => i.title.includes(name) || name.includes(i.title));
-      if (idx >= 0) {
-        const removed = Store.removeSchedule(Store.state.schedule[idx].id);
-        return mkMsg("text", `已删除日程「${removed.title}」（${removed.startTime}~${removed.endTime}）。`);
+      const dateHint = date ? `（${date}）` : "";
+      const matches = Store.state.schedule.filter((i) => i.title.includes(name) || name.includes(i.title));
+      const item = (date ? matches.find((i) => (i.date || "") === date) : null) || (matches.length === 1 ? matches[0] : null);
+      if (item) {
+        const removed = Store.removeSchedule(item.id);
+        return mkMsg("text", `已删除日程「${removed.title}」${dateHint}（${removed.startTime}~${removed.endTime}）。`);
       }
-      return mkMsg("text", "没有找到匹配的日程，可以告诉我更具体的关键词，例如「删除跑步」。");
+      if (matches.length > 1)
+        return mkMsg(
+          "text",
+          `找到多个匹配的日程，请告诉我具体哪一天：${matches.slice(0, 5).map((i) => `「${i.title}」${i.date || ""} ${i.startTime}`).join("、")}`
+        );
+      return mkMsg("text", "没有找到匹配的日程，可以告诉我更具体的关键词，例如「删除明天跑步」或「删除跑步」。");
     }
     // 查询统计 / 效率（放在"完成/打卡"之前，避免"完成了多少"被打卡意图截胡）
     if (/效率|完成率|统计|进展|表现|总结|完成(了|的)?(多少|几个|几项|进度|情况)/.test(lower)) {

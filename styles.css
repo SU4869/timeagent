@@ -393,6 +393,13 @@ ul { list-style: none; }
 .chat-src { font-size: 10px; color: var(--t3); margin-bottom: 5px; font-weight: 600; }
 .chat-src .dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; margin-right: 4px; vertical-align: 1px; }
 
+/* AI 记忆范围选择 */
+.mem-opts { display: flex; flex-direction: column; gap: 8px; }
+.mem-opt { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 12px 14px; border-radius: var(--r-md); background: var(--surface); border: 1.5px solid var(--line); cursor: pointer; transition: border-color .15s, background .15s; }
+.mem-opt .mo-desc { font-size: 11px; color: var(--t3); }
+.mem-opt.sel { border-color: var(--primary); background: var(--primary-soft); }
+.mem-opt.sel .mo-desc { color: var(--primary-strong); }
+
 /* ===================== 首页：一句话排期快捷条 ===================== */
 .quick-input { display: flex; gap: 8px; margin: 0 0 12px; }
 .quick-input .ai-input { height: 44px; font-size: 13.5px; }
