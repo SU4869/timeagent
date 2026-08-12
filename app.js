@@ -2854,6 +2854,9 @@
     const memFrom = Store.state.prefs.chatMemoryFrom || "";
     const memTo = Store.state.prefs.chatMemoryTo || "";
     const memBtnText = memKey === "custom" ? (memFrom && memTo ? `记忆:${memFrom.slice(5)}~${memTo.slice(5)}` : "记忆:自定义") : `记忆:${chatMemoryLabel(memKey)}`;
+    // 智能对话提示：结合历史日程本地生成（零 token）；空对话时展示可点击引导
+    const chatHints = smartChatHints();
+    const ph = chatHints[0] ? chatHints[0].say : "试试「帮我加个明早背单词1小时」";
     layer.innerHTML = `<div class="head" style="padding:12px 16px;margin:0;background:var(--surface-solid);border-bottom:1px solid var(--line)">
         <button class="icon-btn" id="chatBack">${svg("back")}</button>
         <div class="title" style="font-size:17px">AI 时间管家</div>
@@ -2861,9 +2864,10 @@
         <span class="tag" id="chatMemTag" role="button" tabindex="0" title="AI 记忆范围：能看到多久的日程" style="background:var(--primary-soft);color:var(--primary-strong);cursor:pointer">${memBtnText}</span>
         <span class="tag" id="chatModeTag" style="background:${apiReady() ? "var(--ok-soft, #E8F5E9)" : "var(--primary-soft)"};color:${apiReady() ? "var(--ok, #2E7D32)" : "var(--primary-strong)"}">${apiReady() ? "AI 在线" : "离线助手"}</span>
       </div>
+      ${Store.state.chat.length === 0 ? `<div id="chatHints" style="padding:12px 16px 2px;display:flex;flex-wrap:wrap;gap:8px">${chatHints.map((h) => `<span class="hint-chip" data-chat-hint="${esc(h.say)}">${esc(h.txt)}</span>`).join("")}</div>` : ""}
       <div id="chatList" style="flex:1;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:12px"></div>
       <div style="padding:12px 16px;background:var(--surface-solid);border-top:1px solid var(--line);display:flex;gap:8px">
-        <input class="ai-input" id="chatInput" placeholder="试试「帮我加个明早背单词1小时」" style="flex:1" />
+        <input class="ai-input" id="chatInput" placeholder="试试「${esc(ph)}」" style="flex:1" />
         <button class="btn" id="chatSend" style="width:54px;height:46px;padding:0">${svg("send")}</button>
       </div>`;
     $("#phone").appendChild(layer);
@@ -2932,6 +2936,14 @@
       );
     }
     if (memTag) memTag.addEventListener("click", openMemPicker);
+    // 智能引导 chips：点击填入输入框并聚焦（回车即发送，可先修改）
+    layer.querySelectorAll("[data-chat-hint]").forEach((c) =>
+      c.addEventListener("click", () => {
+        input.value = c.dataset.chatHint;
+        input.focus();
+        layer.querySelector("#chatHints") && layer.querySelector("#chatHints").remove();
+      })
+    );
 
     // 恢复历史
     Store.state.chat.forEach((m) => list.appendChild(chatBubble(m)));
@@ -3141,6 +3153,35 @@ ${scheduleContext(Store.state.prefs.chatMemory === "custom" ? { from: Store.stat
       d.innerHTML = (isU ? "" : srcTag(m.via)) + esc(m.content);
     }
     return d;
+  }
+
+  // 智能对话提示：结合用户历史日程本地规则生成（零 token，不调模型）
+  // 优先级：今日过期未打卡 → 今日下一项待办 → 高频事项 → 空闲时段 → 通用兜底
+  function smartChatHints() {
+    const t = todayStr();
+    const nowMin = new Date().getHours() * 60 + new Date().getMinutes();
+    const today = scopeItems(Store.state.schedule, { mode: "day", anchor: t });
+    const hints = [];
+    const missed = today.filter((i) => !isDone(i) && toMin(i.endTime) < nowMin);
+    if (missed.length) hints.push({ txt: `把「${missed[0].title}」补打卡`, say: `把${missed[0].title}打卡` });
+    const undone = today.filter((i) => !isDone(i) && toMin(i.startTime) >= nowMin);
+    if (undone.length) hints.push({ txt: `把「${undone[0].title}」改到晚上`, say: `把${undone[0].title}改到晚上8点` });
+    const freq = {};
+    Store.state.schedule.forEach((i) => {
+      const d = i.date || t;
+      if (d >= addDays(t, -14) && d <= addDays(t, 14)) freq[i.title] = (freq[i.title] || 0) + 1;
+    });
+    const top = Object.entries(freq).sort((a, b) => b[1] - a[1])[0];
+    if (top && top[1] >= 2) hints.push({ txt: `再安排一次「${top[0]}」`, say: `明天早上${top[0]}1小时` });
+    const slots = freeSlots();
+    if (slots.length) hints.push({ txt: "看看现在有什么空闲", say: "我现在有什么空闲" });
+    if (!hints.length)
+      hints.push(
+        { txt: "帮我加个明早背单词 1 小时", say: "帮我加个明早背单词1小时" },
+        { txt: "看看今天的安排", say: "今天有什么安排" },
+        { txt: "现在该做什么", say: "现在该做什么" }
+      );
+    return hints.slice(0, 3);
   }
 
   // 离线对话助手：解析意图 → 增删改查 + 自然语言回复
