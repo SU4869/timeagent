@@ -2857,6 +2857,10 @@
       localStorage.setItem("timeagent_theme", cur);
     } catch (e) {}
     renderCurrent();
+    // 通知安卓壳同步原生顶部背景与状态栏颜色（深色模式下顶条不再留白）
+    try {
+      if (window.AndroidBridge && window.AndroidBridge.setTheme) window.AndroidBridge.setTheme(cur);
+    } catch (e) {}
   }
 
   /* ============================================================
