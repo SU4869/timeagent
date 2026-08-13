@@ -859,7 +859,7 @@
     try {
       const text = await callLLM(
         [
-          { role: "system", content: "你是严谨又温暖的私人时间管理洞察助手。" },
+          { role: "system", content: `你是严谨又温暖的私人时间管理洞察助手。${personaPromptLine()}` },
           { role: "user", content: prompt },
         ],
         { temperature: 0.6, maxTokens: 500, timeoutMs: 30000 }
@@ -1345,6 +1345,32 @@
     }
     profileCache = { at: Date.now(), text: parts.join("；") };
     return profileCache.text;
+  }
+
+  /* ============================================================
+     Agent 人格（Persona）系统
+     - 用户可在对话中实时调教语气/风格（"以后说话可爱一点"）
+     - 支持恢复默认、命名备份、切换备份（备份持久化 prefs.persona.list）
+     ============================================================ */
+  function personaState() {
+    const p = Store.state.prefs;
+    if (!p.persona) p.persona = { current: "default", style: "", list: [] };
+    return p.persona;
+  }
+  function personaStyle() {
+    return personaState().style || "";
+  }
+  // 主动消息风格调味（轻量规则：含可爱/萌关键词时加颜文字，简洁风不加）
+  function personaFlavor() {
+    const s = personaStyle();
+    if (/可爱|卖萌|萌|撒娇/.test(s)) return "～(｡･ω･｡)";
+    if (/简洁|简短|干练/.test(s)) return "";
+    return "～";
+  }
+  // 注入 prompt 的语气要求行
+  function personaPromptLine() {
+    const s = personaStyle();
+    return s ? `\n语气风格（用户实时调教，务必严格遵守）：${s}` : "\n语气风格：自然友好，像朋友一样。";
   }
 
   /* ---------- 周/月环比趋势（P2）：较上一周期专注时长变化，纯离线 ---------- */
@@ -1955,6 +1981,8 @@
         <div class="menu">
           <div class="menu-item" data-act="open-catman">${svgWrap("tag")}<span>分类管理</span>${svgWrap("chevron")}</div>
           <div class="divider"></div>
+          <div class="menu-item" data-act="open-persona">${svgWrap("heart")}<span>Agent 人格调教</span><span class="muted" style="font-size:11px">${personaStyle() ? "自定义" : "默认"}</span>${svgWrap("chevron")}</div>
+          <div class="divider"></div>
           <div class="menu-item" data-act="open-history">${svgWrap("folder")}<span>历史记录</span>${svgWrap("chevron")}</div>
           <div class="divider"></div>
           <div class="menu-item" data-act="open-prefs">${svgWrap("brain")}<span>AI 偏好设置</span>${svgWrap("chevron")}</div>
@@ -2462,6 +2490,96 @@
   }
 
   /* ============================================================
+     Agent 人格调教面板（我的页入口 + 对话舱命令共用同一数据）
+     ============================================================ */
+  function openPersona() {
+    const ps = personaState();
+    const listHtml = (ps.list || []).length
+      ? ps.list
+          .map(
+            (b) =>
+              `<div class="sch-item" style="margin-bottom:8px">
+                <span class="sch-title" style="font-size:13px;flex:0 0 auto">${esc(b.name)}</span>
+                <div class="sch-main"><div class="sch-title" style="font-size:11px;color:var(--t3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(b.style.slice(0, 28))}${b.style.length > 28 ? "…" : ""}</div></div>
+                <button class="sch-del" data-persona-act="use" data-name="${esc(b.name)}">使用</button>
+                <button class="sch-del" data-persona-act="del" data-name="${esc(b.name)}">${svg("trash")}</button>
+              </div>`
+          )
+          .join("")
+      : `<div class="card-sub">还没有备份。先在对话舱里调教语气（如「以后说话可爱一点」），再回来这里备份。</div>`;
+    openSheet(
+      `<div class="sheet-head"><div class="h">Agent 人格调教</div><button class="x" data-close>${svg("close")}</button></div>
+       <div class="card-sub">在对话舱里直接说就能调教，例如「以后说话可爱一点」「叫我老板」「说话简洁些」。当前风格：</div>
+       <div class="advice mt2" style="align-items:flex-start">
+         <span class="bulb">${svg("bulb")}</span>
+         <div class="txt" id="personaCur">${esc(ps.style || "默认 · 自然友好，像朋友一样")}</div>
+       </div>
+       <div class="flex gap1 mt2">
+         <button class="btn ghost flex" id="personaReset" style="flex:1">恢复默认</button>
+       </div>
+       <div class="divider mt2"></div>
+       <div class="form-label mt2">备份当前风格</div>
+       <div class="flex gap1 mt1">
+         <input class="input" id="personaBkName" placeholder="给风格起个名字，如「活泼版」" maxlength="12" />
+         <button class="btn" id="personaBkBtn" style="flex:0 0 auto">${svg("save")} 备份</button>
+       </div>
+       <div class="form-label mt2">我的备份（点「使用」切换）</div>
+       <div class="mt1">${listHtml}</div>`,
+      {
+        onOpen: (el) => {
+          el.querySelector("#personaReset").addEventListener("click", () => {
+            ps.style = "";
+            ps.current = "default";
+            Store.notify();
+            el.querySelector("#personaCur").textContent = "默认 · 自然友好，像朋友一样";
+            toast("已恢复默认语气", "ok");
+          });
+          el.querySelector("#personaBkBtn").addEventListener("click", () => {
+            const name = el.querySelector("#personaBkName").value.trim();
+            if (!name) {
+              toast("请给风格起个名字", "warn");
+              return;
+            }
+            if (!ps.style) {
+              toast("当前是默认风格，先在对话里调教再备份", "warn");
+              return;
+            }
+            if (!ps.list) ps.list = [];
+            ps.list = ps.list.filter((x) => x.name !== name);
+            ps.list.push({ id: uid(), name, style: ps.style });
+            Store.notify();
+            closeSheet();
+            openPersona();
+            toast(`已备份「${name}」📦`, "ok");
+          });
+          el.querySelectorAll("[data-persona-act]").forEach((b) =>
+            b.addEventListener("click", () => {
+              const name = b.dataset.name;
+              if (b.dataset.personaAct === "use") {
+                const hit = (ps.list || []).find((x) => x.name === name);
+                if (hit) {
+                  ps.style = hit.style;
+                  ps.current = hit.id;
+                  Store.notify();
+                  closeSheet();
+                  openPersona();
+                  toast(`已切换到「${name}」🎭`, "ok");
+                }
+              } else {
+                ps.list = (ps.list || []).filter((x) => x.name !== name);
+                Store.notify();
+                closeSheet();
+                openPersona();
+                toast(`已删除备份「${name}」`, "ok");
+              }
+            })
+          );
+        },
+      }
+    );
+  }
+
+  /* ============================================================
      AI 日报浮层
      ============================================================ */
   function openReport() {
@@ -2509,7 +2627,7 @@
               `请输出：一句话总评；2-3 条亮点或发现；1 条具体的改进建议。全文 150 字以内，短段落，语气自然，不要用夸张赞美。`;
             callLLM(
               [
-                { role: "system", content: "你是严谨又温暖的私人时间管理日报助手。" },
+                { role: "system", content: `你是严谨又温暖的私人时间管理日报助手。${personaPromptLine()}` },
                 { role: "user", content: prompt },
               ],
               { temperature: 0.7, maxTokens: 800, timeoutMs: 45000 }
@@ -2873,7 +2991,7 @@
         } catch (e) {}
       }
       // 提醒统一进对话舱：已打开直接插入 AI 消息；未打开 toast 带「查看」按钮进入后可见
-      const chatMsg = `（日程提醒）${msg}`;
+      const chatMsg = msg + personaFlavor();
       if (document.getElementById("chatLayer")) {
         proactiveChatPush(chatMsg);
       } else {
@@ -3007,8 +3125,8 @@
     const hit = proactivePick();
     if (!hit) return;
     proactiveLogOnce(hit.type);
-    const prefix = hit.type === "nudge" ? "（主动提醒）" : "（AI 想聊聊）";
-    const text = prefix + hit.text;
+    // 无正式前缀，像人一样说话（默认文案已口语化；调教风格时追加轻量装饰）
+    const text = hit.text + personaFlavor();
     if (document.getElementById("chatLayer")) {
       proactiveChatPush(text);
     } else {
@@ -3367,11 +3485,75 @@
       tag.style.background = online ? "var(--ok-soft, #E8F5E9)" : "var(--primary-soft)";
       tag.style.color = online ? "var(--ok, #2E7D32)" : "var(--primary-strong)";
     }
+    // Agent 人格调教：调教语气 / 恢复默认 / 命名备份 / 切换备份（本地处理，零 token）
+    function handlePersonaCmd(text) {
+      const ps = personaState();
+      if (/恢复默认|重置(性格|风格|语气|人格)|变回原来|恢复原样/.test(text)) {
+        ps.style = "";
+        ps.current = "default";
+        Store.notify();
+        pushMsg(mkMsg("text", "好哒，已经恢复默认语气啦～", null, "offline"));
+        return true;
+      }
+      const bk = text.match(/备份(?:当前)?(?:性格|风格|人格|语气)(?:为|叫|成)?\s*(.+)/);
+      if (bk) {
+        const name = bk[1].replace(/[。.，,！!？?\s]/g, "").trim();
+        if (!name) {
+          pushMsg(mkMsg("text", "想给这个风格起个名字，比如「备份性格为 活泼版」～", null, "offline"));
+          return true;
+        }
+        if (!ps.style) {
+          pushMsg(mkMsg("text", "当前还没有调教过语气呢，先说说你想要的效果，比如「以后说话可爱一点」～", null, "offline"));
+          return true;
+        }
+        if (!ps.list) ps.list = [];
+        ps.list = ps.list.filter((x) => x.name !== name);
+        ps.list.push({ id: uid(), name, style: ps.style });
+        Store.notify();
+        pushMsg(mkMsg("text", `已备份当前风格为「${name}」📦 想换回时说「切换到${name}」。`, null, "offline"));
+        return true;
+      }
+      let sw = text.match(/切换(?:到|成)?\s*「?(.+?)」?(?:的)?(?:性格|风格|人格)/);
+      if (!sw) sw = text.match(/切换(?:到|成)?\s*「?(.+?)」?$/);
+      if (sw) {
+        const name = sw[1].replace(/[。.，,！!？?\s]/g, "").trim();
+        const hit = (ps.list || []).find((x) => x.name === name);
+        if (hit) {
+          ps.style = hit.style;
+          ps.current = hit.id;
+          Store.notify();
+          pushMsg(mkMsg("text", `已切换到「${name}」的风格 🎭`, null, "offline"));
+          return true;
+        }
+        pushMsg(mkMsg("text", `没找到备份「${name}」，可用备份：${(ps.list || []).map((x) => x.name).join("、") || "（暂无，先调教后说「备份性格为 XX」）"}`, null, "offline"));
+        return true;
+      }
+      // 调教指令：引导词 + 风格词
+      const TUNE =
+        /(?:以后|接下来|今后|从现在起|你要|你应该|请你|请|给我)[^。，,]{1,24}(?:说话|语气|风格|称呼|叫我|可爱|简洁|正式|口语|卖萌|温柔|幽默|活泼|高冷|亲切|像人)/;
+      if (TUNE.test(text)) {
+        const cmd = text
+          .replace(/^(请|好的|行|ok|好哒)/i, "")
+          .replace(/^(以后|接下来|今后|从现在起|你要|你应该|请你|请|给我)/, "")
+          .replace(/[。.！!？?\s]+$/, "")
+          .trim();
+        if (cmd && cmd.length <= 40) {
+          ps.style = ps.style ? ps.style + "；" + cmd : cmd;
+          ps.current = "custom";
+          Store.notify();
+          pushMsg(mkMsg("text", `好，我记住了：${cmd}。之后我都会这样和你相处～说「恢复默认」随时重置。`, null, "offline"));
+          return true;
+        }
+      }
+      return false;
+    }
     function sendMsg() {
       const text = input.value.trim();
       if (!text) return;
       pushMsg({ type: "text", content: text, isUser: true });
       input.value = "";
+      // Agent 调教指令：本地实时处理（不消耗 token），优先级高于日程/闲聊
+      if (handlePersonaCmd(text)) return;
       // 思考指示器
       const typing = document.createElement("div");
       typing.className = "typing";
@@ -3391,7 +3573,7 @@
               [
                 {
                   role: "system",
-                  content: `你是 TimeAgent 智能时间管家，用简洁友好的中文回答。今天日期：${todayStr()}。
+                  content: `你是 TimeAgent 智能时间管家，用简洁友好的中文回答。今天日期：${todayStr()}。${personaPromptLine()}
 你有权查看和操作 app 内全部日程数据（查询任意日期、添加、删除、打卡、改期）。
 关于用户的长期习惯观察（供参考，与下方日程矛盾时以下方日程为准）：${buildUserProfile() || "（历史数据不足）"}
 当前记忆范围：${(Store.state.prefs.chatMemory === "custom" ? `自定义区间 ${Store.state.prefs.chatMemoryFrom}~${Store.state.prefs.chatMemoryTo}` : chatMemoryLabel(Store.state.prefs.chatMemory || "week"))}。范围内真实日程如下（范围外数据当前不可见，用户问到时如实说明，或建议切换记忆范围）：
@@ -3896,6 +4078,9 @@ ${scheduleContext(Store.state.prefs.chatMemory === "custom" ? { from: Store.stat
         break;
       case "open-catman":
         openCatMan();
+        break;
+      case "open-persona":
+        openPersona();
         break;
       case "del-cat": {
         const tag = t.dataset.tag;
