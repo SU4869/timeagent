@@ -64,6 +64,7 @@
     repeat: '<path d="M17 2l4 4-4 4"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><path d="M7 22l-4-4 4-4"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/>',
     palette: '<path d="M12 3a9 9 0 1 0 0 18c1.1 0 1.7-1 .9-1.8-.8-.8-.3-2.2.9-2.2H17a4 4 0 0 0 4-4c0-5-4-10-9-10z"/><circle cx="7.5" cy="11" r="1.1" fill="currentColor" stroke="none"/><circle cx="12" cy="7.5" r="1.1" fill="currentColor" stroke="none"/><circle cx="16.5" cy="11" r="1.1" fill="currentColor" stroke="none"/>',
     save: '<path d="M5 3h11l3 3v15H5z"/><path d="M8 3v6h7"/><path d="M8 21v-7h8v7"/>',
+    share: '<circle cx="6" cy="12" r="2.6"/><circle cx="17" cy="5.5" r="2.6"/><circle cx="17" cy="18.5" r="2.6"/><path d="M8.3 10.8l6.5-3.8M8.3 13.2l6.5 3.8"/>',
     shield: '<path d="M12 3l7 3v5c0 4.5-3 8.5-7 10-4-1.5-7-5.5-7-10V6z"/><path d="M9 12l2 2 4-4"/>',
     doc: '<path d="M6 3h8l4 4v14H6z"/><path d="M14 3v4h4M9 12h6M9 16h6"/>',
   };
@@ -2511,17 +2512,139 @@
     });
   }
 
+  // —— 冲突多方案（P2）：给任务生成 2~3 个可行调整方案，用户可自定义 ——
+  function toMin(t) {
+    const [h, m] = String(t).split(":").map(Number);
+    return h * 60 + m;
+  }
+  function fmtMin(m) {
+    return `${pad(Math.floor(m / 60) % 24)}:${pad(m % 60)}`;
+  }
+  // date 当天 startMin~endMin 是否空闲（可排除某日程）
+  function rangeFree(date, startMin, endMin, excludeId) {
+    const s = fmtMin(startMin);
+    const e = fmtMin(endMin);
+    return !Store.state.schedule.some((ex) => ex.id !== excludeId && occursOn(ex, date) && s < ex.endTime && e > ex.startTime);
+  }
+  // 返回每个新任务与其冲突的已有日程
+  function conflictDetail(tasks) {
+    const out = [];
+    tasks.forEach((t) => {
+      const td = t.date || todayStr();
+      const cfl = Store.state.schedule.filter((ex) => occursOn(ex, td) && t.startTime < ex.endTime && t.endTime > ex.startTime);
+      if (cfl.length) out.push({ task: t, conflicts: cfl });
+    });
+    return out;
+  }
+  // 为一个冲突任务生成 2~3 个方案：提前 / 推后(或顺延) / 挪走低优先级冲突项
+  function buildConflictPlans(task, conflicts) {
+    const plans = [];
+    const date = task.date || todayStr();
+    const dur = Math.max(15, toMin(task.endTime) - toMin(task.startTime));
+    const main = conflicts[0];
+    // A 提前：赶在最早冲突开始之前
+    const aEnd = Math.min(...conflicts.map((c) => toMin(c.startTime)));
+    const aStart = aEnd - dur;
+    if (aStart >= 0 && rangeFree(date, aStart, aEnd, null)) {
+      plans.push({ label: "提前", desc: `提前到 ${fmtMin(aStart)}~${fmtMin(aEnd)}，赶在「${main.title}」之前`, startTime: fmtMin(aStart), endTime: fmtMin(aEnd) });
+    }
+    // B 推后：等最晚冲突结束之后
+    const bStart = Math.max(...conflicts.map((c) => toMin(c.endTime)));
+    const bEnd = bStart + dur;
+    if (bEnd <= 23 * 60 + 59 && rangeFree(date, bStart, bEnd, null)) {
+      plans.push({ label: "推后", desc: `推后到 ${fmtMin(bStart)}~${fmtMin(bEnd)}，等「${main.title}」结束再开始`, startTime: fmtMin(bStart), endTime: fmtMin(bEnd) });
+    } else {
+      plans.push({ label: "顺延", desc: `今天放不下了，顺延到明天同一时段（${task.startTime}~${task.endTime}）`, startTime: task.startTime, endTime: task.endTime, nextDay: true });
+    }
+    // C 挪走冲突项：优先挪低优先级（高优先级不动）
+    const movable = conflicts
+      .filter((c) => c.priority !== "高")
+      .sort((a, b) => ((a.priority === "中" ? 1 : 0) - (b.priority === "中" ? 1 : 0)))[0];
+    if (movable) {
+      const mStart = toMin(task.endTime);
+      const mEnd = mStart + Math.max(15, toMin(movable.endTime) - toMin(movable.startTime));
+      if (mEnd <= 23 * 60 + 59 && rangeFree(date, mStart, mEnd, movable.id)) {
+        plans.push({ label: "挪走它", desc: `把「${movable.title}」（${movable.priority || "中"}优先级）挪到 ${fmtMin(mStart)}~${fmtMin(mEnd)}，两个都保住`, moveId: movable.id, startTime: fmtMin(mStart), endTime: fmtMin(mEnd) });
+      }
+    }
+    return plans;
+  }
+  // 应用一个冲突方案（添加新任务 + 可选挪走冲突项）
+  function applyConflictPlan(task, plan) {
+    if (plan.nextDay) {
+      const nd = addDays(task.date || todayStr(), 1);
+      Store.addSchedule(Object.assign({}, task, { date: nd, isFresh: true }));
+      toast(`「${task.title}」今天放不下，已顺延到明天（${nd}）`, "ok");
+      return { applied: `顺延到明天` };
+    }
+    if (plan.moveId) {
+      const mv = Store.state.schedule.find((x) => x.id === plan.moveId);
+      if (mv) {
+        Store.updateSchedule(mv.id, { startTime: plan.startTime, endTime: plan.endTime });
+        toast(`已把「${mv.title}」挪到 ${plan.startTime}~${plan.endTime}`, "ok");
+      }
+    }
+    Store.addSchedule(Object.assign({}, task, { startTime: plan.startTime, endTime: plan.endTime, isFresh: true }));
+    return { applied: `${plan.startTime}~${plan.endTime}` };
+  }
+
   function showConflict(tasks) {
+    const det = conflictDetail(tasks);
     const plan = tasks.map((t) => `• ${t.startTime} ~ ${t.endTime}  ${t.title}`).join("\n");
+    const planCards = det
+      .map(({ task, conflicts }, di) => {
+        const plans = buildConflictPlans(task, conflicts);
+        const cards = plans
+          .map(
+            (p, pi) => `<button class="plan-card" data-di="${di}" data-pi="${pi}">
+              <span class="pc-label">方案 ${"ABC"[pi]} · ${p.label}</span>
+              <span class="pc-desc">${esc(p.desc)}</span>
+            </button>`
+          )
+          .join("");
+        return `<div class="plan-group">
+          <div class="pg-title">「${esc(task.title)}」${task.startTime}~${task.endTime} 与「${esc(conflicts.map((c) => c.title).join("、"))}」重叠</div>
+          ${cards || '<div class="muted" style="font-size:12px">暂无可自动调整的空闲时段，建议改到其它日期。</div>'}
+        </div>`;
+      })
+      .join("");
     openSheet(
-      `<div class="sheet-head"><div class="h">🕐 时间排期提醒</div></div>
-       <div class="card-sub" style="line-height:1.7">我帮您制定了如下新计划：<br><br><b style="white-space:pre-line">${esc(plan)}</b><br><br>⚠️ 不过我注意到，这些时间段和您已有的日程存在冲突。<br><br>🌟 您看是直接按新方案添加，还是先取消再重新安排呢？</div>
+      `<div class="sheet-head"><div class="h">🕐 时间排期提醒</div><button class="x" data-close>${svg("close")}</button></div>
+       <div class="card-sub" style="line-height:1.7">您安排的：<br><b style="white-space:pre-line">${esc(plan)}</b><br>与已有日程时间重叠。选一个方案我帮你调整，或自己来：</div>
+       ${planCards ? `<div class="mt2">${planCards}</div>` : ""}
        <div class="flex gap1 mt3">
-         <button class="btn ghost flex" style="flex:1" data-close>我再改改</button>
+         <button class="btn ghost flex" style="flex:1" id="conflictSelf">✋ 我自己来</button>
          <button class="btn danger flex" style="flex:1" id="forceAdd">仍按此添加</button>
        </div>`,
       {
         onOpen: (el) => {
+          el.querySelectorAll(".plan-card").forEach((card) => {
+            card.addEventListener("click", () => {
+              const di = +card.dataset.di;
+              const pi = +card.dataset.pi;
+              const { task } = det[di];
+              const p = buildConflictPlans(task, det[di].conflicts)[pi];
+              if (!p) return;
+              applyConflictPlan(task, p);
+              closeSheet();
+              renderCurrent();
+              toast(`已按方案 ${"ABC"[pi]} 添加「${task.title}」✅`, "ok");
+            });
+          });
+          el.querySelector("#conflictSelf").addEventListener("click", () => {
+            closeSheet();
+            navigate(0);
+            schedUI.open = true;
+            schedUI.title = tasks[0].title;
+            schedUI.sh = Math.floor(toMin(tasks[0].startTime) / 60);
+            schedUI.sm = toMin(tasks[0].startTime) % 60;
+            const dur = Math.max(15, toMin(tasks[0].endTime) - toMin(tasks[0].startTime));
+            schedUI.dh = Math.floor(dur / 60);
+            schedUI.dm = dur % 60;
+            schedUI.date = tasks[0].date || todayStr();
+            renderCurrent();
+            toast("已打开手动添加表单，时间可以自己改", "ok");
+          });
           el.querySelector("#forceAdd").addEventListener("click", () => {
             addTasksFromPlanner(tasks);
             closeSheet();
@@ -3648,10 +3771,13 @@
   }
 
   /* ============================================================
-     数据备份 / 导入 / 清空（逻辑与字段同 Store，便于回迁鸿蒙文件沙箱）
+     数据备份（加密导出 / 导入恢复 / 清空）——大众友好向导式
      ============================================================ */
   function downloadJSON(filename, obj) {
     const blob = new Blob([JSON.stringify(obj, null, 2)], { type: "application/json" });
+    downloadBlob(blob, filename);
+  }
+  function downloadBlob(blob, filename) {
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
@@ -3661,73 +3787,226 @@
     a.remove();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
+
+  // —— 备份编解码核心（Web Crypto 加密，无口令则 base64 明文）——
+  function b64FromBytes(bytes) {
+    let s = "";
+    for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+    return btoa(s);
+  }
+  function bytesFromB64(b64) {
+    const bin = atob(b64);
+    const out = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+    return out;
+  }
+  function backupCryptoOK() {
+    return !!(window.crypto && window.crypto.subtle && window.TextEncoder && window.TextDecoder);
+  }
+  function backupPayload() {
+    return {
+      app: "timeagent",
+      ver: 1,
+      at: new Date().toISOString(),
+      schedule: Store.state.schedule,
+      customTags: Store.state.customTags,
+      prefs: Store.state.prefs,
+      chat: Store.state.chat || [],
+    };
+  }
+  async function buildBackupFile(passphrase) {
+    const json = JSON.stringify(backupPayload());
+    const bytes = new TextEncoder().encode(json);
+    let pkg;
+    if (passphrase && backupCryptoOK()) {
+      const salt = crypto.getRandomValues(new Uint8Array(16));
+      const iv = crypto.getRandomValues(new Uint8Array(12));
+      const base = await crypto.subtle.importKey("raw", new TextEncoder().encode(passphrase), "PBKDF2", false, ["deriveKey"]);
+      const dk = await crypto.subtle.deriveKey({ name: "PBKDF2", salt, iterations: 100000, hash: "SHA-256" }, base, { name: "AES-GCM", length: 256 }, false, ["encrypt"]);
+      const ct = new Uint8Array(await crypto.subtle.encrypt({ name: "AES-GCM", iv }, dk, bytes));
+      pkg = { app: "timeagent", ver: 1, enc: true, salt: b64FromBytes(salt), iv: b64FromBytes(iv), data: b64FromBytes(ct) };
+    } else {
+      pkg = { app: "timeagent", ver: 1, enc: false, data: b64FromBytes(bytes) };
+    }
+    return { blob: new Blob([JSON.stringify(pkg)], { type: "application/octet-stream" }), name: `timeagent-backup-${todayStr()}.timeagent` };
+  }
+  async function parseBackupText(text, passphrase) {
+    const pkg = JSON.parse(text);
+    if (!pkg || pkg.app !== "timeagent") throw new Error("不是 TimeAgent 备份文件（或文件已损坏）");
+    let json;
+    if (pkg.enc) {
+      if (!passphrase) throw new Error("该备份已加密，请输入当时设置的口令");
+      if (!backupCryptoOK()) throw new Error("当前环境不支持解密");
+      const salt = bytesFromB64(pkg.salt);
+      const iv = bytesFromB64(pkg.iv);
+      const base = await crypto.subtle.importKey("raw", new TextEncoder().encode(passphrase), "PBKDF2", false, ["deriveKey"]);
+      const dk = await crypto.subtle.deriveKey({ name: "PBKDF2", salt, iterations: 100000, hash: "SHA-256" }, base, { name: "AES-GCM", length: 256 }, false, ["decrypt"]);
+      let pt;
+      try {
+        pt = new Uint8Array(await crypto.subtle.decrypt({ name: "AES-GCM", iv }, dk, bytesFromB64(pkg.data)));
+      } catch (e) {
+        throw new Error("口令不正确，请重新输入");
+      }
+      json = new TextDecoder().decode(pt);
+    } else {
+      json = new TextDecoder().decode(bytesFromB64(pkg.data));
+    }
+    const data = JSON.parse(json);
+    if (!data || !Array.isArray(data.schedule)) throw new Error("备份内容格式不正确");
+    return data;
+  }
+  function shareOrDownload(blob, name) {
+    try {
+      if (navigator.share && navigator.canShare && navigator.canShare({ files: [new File([blob], name, { type: "application/octet-stream" })] })) {
+        navigator.share({ files: [new File([blob], name, { type: "application/octet-stream" })] }).catch(() => {});
+        return "share";
+      }
+    } catch (e) {}
+    downloadBlob(blob, name);
+    return "download";
+  }
+  function applyBackupData(data) {
+    Store.state.schedule = data.schedule
+      .filter((i) => i && i.title != null)
+      .map((i) => Object.assign({ date: todayStr(), isCompleted: false, isFresh: false, desc: "", repeat: "none", remind: false, remindOffset: 10, doneDates: [], priority: "中", doneAt: null, doneAtMap: null }, i));
+    if (Array.isArray(data.customTags)) Store.state.customTags = data.customTags;
+    if (data.prefs) Store.state.prefs = Object.assign({ defaultView: "day", freshHighlight: true }, data.prefs);
+    if (Array.isArray(data.chat)) Store.state.chat = data.chat;
+    Store.notify();
+    initReminders();
+    renderCurrent();
+  }
+
   function openBackup() {
-    const itemCount = Store.state.schedule.length;
     openSheet(
       `<div class="sheet-head"><div class="h">数据备份</div><button class="x" data-close>${svg("close")}</button></div>
-       <div class="mt1">
-         <div class="card-sub">当前共 ${itemCount} 条日程。导出为 JSON 文件可保存到本地或换设备恢复；导入会覆盖当前日程数据。</div>
-         <button class="btn block mt2" id="bkExport">${svg("save")} 导出备份（JSON）</button>
-         <div class="mt2">
-           <label class="btn block soft" style="display:block;text-align:center;cursor:pointer">${svg("folder")} 导入备份
-             <input type="file" id="bkImport" accept="application/json,.json" style="display:none" />
-           </label>
-         </div>
-         <div class="divider"></div>
-         <button class="btn block ghost danger" id="bkClear">${svg("trash")} 清空全部日程</button>
-       </div>`,
-      {
-        onOpen: (el) => {
-          el.querySelector("#bkExport").addEventListener("click", () => {
-            downloadJSON(`timeagent-backup-${todayStr()}.json`, { schedule: Store.state.schedule, customTags: Store.state.customTags, prefs: Store.state.prefs });
-            toast("已导出备份文件", "ok");
-          });
-          el.querySelector("#bkImport").addEventListener("change", (e) => {
-            const file = e.target.files && e.target.files[0];
-            if (!file) return;
-            const reader = new FileReader();
-            reader.onload = () => {
-              try {
-                const data = JSON.parse(reader.result);
-                if (!data || !Array.isArray(data.schedule)) throw new Error("格式不正确");
-                Store.state.schedule = data.schedule
-                  .filter((i) => i && i.title != null)
-                  .map((i) => Object.assign({ date: todayStr(), isCompleted: false, isFresh: false, desc: "", repeat: "none", remind: false, remindOffset: 10, doneDates: [], priority: "中", doneAt: null, doneAtMap: null }, i));
-                if (Array.isArray(data.customTags)) Store.state.customTags = data.customTags;
-                if (data.prefs) Store.state.prefs = Object.assign({ defaultView: "day", freshHighlight: true }, data.prefs);
-                Store.notify();
-                initReminders();
-                closeSheet();
-                renderCurrent();
-                toast(`已导入 ${Store.state.schedule.length} 条日程`, "ok");
-              } catch (err) {
-                toast("导入失败：文件格式不正确", "err");
-              }
-            };
-            reader.readAsText(file);
-          });
-          el.querySelector("#bkClear").addEventListener("click", () => {
-            openSheet(
-              `<div class="sheet-head"><div class="h">确认清空</div><button class="x" data-close>${svg("close")}</button></div>
-               <div class="mt1"><div class="card-sub">将删除全部 ${itemCount} 条日程，此操作不可撤销。确定要继续吗？</div>
-                 <div class="flex mt3" style="gap:10px"><button class="btn ghost flex" data-close style="flex:1">取消</button><button class="btn flex danger" id="bkClearConfirm" style="flex:1">确认清空</button></div>
-               </div>`,
-              {
-                onOpen: (el2) => {
-                  el2.querySelector("#bkClearConfirm").addEventListener("click", () => {
-                    Store.state.schedule = [];
-                    Store.notify();
-                    closeSheet();
-                    renderCurrent();
-                    toast("已清空全部日程", "warn");
-                  });
-                },
-              }
-            );
-          });
-        },
-      }
+       <div id="bkBody" class="mt1"></div>`,
+      { onOpen: (el) => bkRenderMain(el.querySelector("#bkBody")) }
     );
+  }
+  function bkRenderMain(body) {
+    const n = Store.state.schedule.length;
+    body.innerHTML = `
+      <div class="bk-tip" style="line-height:1.7">📱 换手机 / 清缓存 / 卸载前，先「导出备份」存到微信或网盘；新手机装好 App 后「导入备份」一键恢复全部数据（含人格、目标、统计）。</div>
+      <button class="btn block mt2" id="bkExportStart">${svg("save")} 导出备份</button>
+      <button class="btn block soft mt2" id="bkImportStart">${svg("folder")} 导入备份</button>
+      <div class="divider"></div>
+      <div class="card-sub muted">当前 ${n} 条日程。旧版 .json 备份同样可以导入。</div>
+      <button class="btn block ghost danger mt2" id="bkClear">${svg("trash")} 清空全部日程</button>`;
+    body.querySelector("#bkExportStart").addEventListener("click", () => bkRenderExport(body));
+    body.querySelector("#bkImportStart").addEventListener("click", () => bkRenderImport(body));
+    body.querySelector("#bkClear").addEventListener("click", () => {
+      openSheet(
+        `<div class="sheet-head"><div class="h">确认清空</div><button class="x" data-close>${svg("close")}</button></div>
+         <div class="mt1"><div class="card-sub">将删除全部 ${n} 条日程，此操作不可撤销。建议先导出一份备份。确定要继续吗？</div>
+           <div class="flex mt3" style="gap:10px"><button class="btn ghost flex" data-close style="flex:1">取消</button><button class="btn flex danger" id="bkClearConfirm" style="flex:1">确认清空</button></div>
+         </div>`,
+        {
+          onOpen: (el2) => {
+            el2.querySelector("#bkClearConfirm").addEventListener("click", () => {
+              Store.state.schedule = [];
+              Store.notify();
+              closeSheet();
+              renderCurrent();
+              toast("已清空全部日程", "warn");
+            });
+          },
+        }
+      );
+    });
+  }
+  function bkRenderExport(body) {
+    body.innerHTML = `
+      <div class="bk-step-title">📤 导出备份 · 要不要加密？</div>
+      <div class="card-sub mt1" style="line-height:1.7">口令可留空（不加密，更方便）；填了口令则文件加密，<b>换机导入时必须输入同一个口令</b>，忘了就解不开，请务必记住。</div>
+      <input class="input mt2" id="bkPwd" type="password" placeholder="加密口令（可留空）" />
+      <div class="flex gap1 mt3">
+        <button class="btn ghost flex" id="bkBack">返回</button>
+        <button class="btn flex" id="bkDoExport">生成备份文件</button>
+      </div>
+      <div id="bkResult" class="mt2"></div>`;
+    body.querySelector("#bkBack").addEventListener("click", () => bkRenderMain(body));
+    body.querySelector("#bkDoExport").addEventListener("click", async () => {
+      const btn = body.querySelector("#bkDoExport");
+      btn.disabled = true;
+      btn.textContent = "正在生成…";
+      try {
+        const pwd = body.querySelector("#bkPwd").value;
+        const { blob, name } = await buildBackupFile(pwd);
+        const how = shareOrDownload(blob, name);
+        body.querySelector("#bkResult").innerHTML = `<div class="bk-ok">✅ 备份已生成（${esc(name)}）</div>
+          <div class="card-sub mt1" style="line-height:1.7">${pwd ? "已用口令加密。" : "未加密。"}${how === "share" ? "已弹出分享面板，选「微信文件传输助手」或网盘保存即可。" : "文件已保存到下载目录；想存到微信/网盘，点下面按钮分享。"}</div>
+          <button class="btn block soft mt2" id="bkShareAgain">${svg("share")} 分享 / 保存到其它位置</button>`;
+        body.querySelector("#bkShareAgain").addEventListener("click", () => {
+          shareOrDownload(blob, name);
+          toast("已重新调起分享", "ok");
+        });
+        toast("备份已生成", "ok");
+      } catch (e) {
+        body.querySelector("#bkResult").innerHTML = `<div class="bk-err">⚠️ 导出失败：${esc(e.message || "未知错误")}</div>`;
+      } finally {
+        btn.disabled = false;
+        btn.textContent = "生成备份文件";
+      }
+    });
+  }
+  function bkRenderImport(body) {
+    body.innerHTML = `
+      <div class="bk-step-title">📥 导入备份</div>
+      <div class="card-sub mt1" style="line-height:1.7">选择之前导出的 <b>.timeagent</b> 备份文件（旧 .json 也行）。若备份加密过，请输入当时的口令。</div>
+      <label class="btn block soft mt2" style="display:block;text-align:center;cursor:pointer">${svg("folder")} 选择备份文件
+        <input type="file" id="bkFile" accept=".timeagent,.json,application/json,application/octet-stream" style="display:none" />
+      </label>
+      <input class="input mt2" id="bkPwdIn" type="password" placeholder="备份口令（未加密可留空）" />
+      <div id="bkPrev" class="mt2"></div>
+      <div class="flex gap1 mt3">
+        <button class="btn ghost flex" id="bkBack2">返回</button>
+        <button class="btn flex" id="bkDoImport" disabled>恢复此备份</button>
+      </div>`;
+    body.querySelector("#bkBack2").addEventListener("click", () => bkRenderMain(body));
+    let rawText = null;
+    let pending = null;
+    async function tryParse() {
+      if (!rawText) return;
+      const pwd = body.querySelector("#bkPwdIn").value;
+      try {
+        pending = await parseBackupText(rawText, pwd);
+        const n = pending.schedule.length;
+        const tags = (pending.customTags || []).length;
+        const goals = ((pending.prefs || {}).goals || []).length;
+        const at = pending.at ? new Date(pending.at).toLocaleString("zh-CN") : "未知";
+        body.querySelector("#bkPrev").innerHTML = `<div class="bk-prev">📦 备份时间：${esc(at)}<br>日程 ${n} 条 · 标签 ${tags} 个 · 目标 ${goals} 个</div>`;
+        body.querySelector("#bkDoImport").disabled = false;
+      } catch (err) {
+        pending = null;
+        body.querySelector("#bkPrev").innerHTML = `<div class="bk-err">⚠️ ${esc(err.message || "解析失败")}</div>`;
+        body.querySelector("#bkDoImport").disabled = true;
+      }
+    }
+    body.querySelector("#bkFile").addEventListener("change", (e) => {
+      const file = e.target.files && e.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = () => {
+        rawText = String(reader.result);
+        tryParse();
+      };
+      reader.readAsText(file);
+    });
+    body.querySelector("#bkPwdIn").addEventListener("input", tryParse);
+    body.querySelector("#bkDoImport").addEventListener("click", async () => {
+      if (!pending) return;
+      const btn = body.querySelector("#bkDoImport");
+      btn.disabled = true;
+      // 恢复前自动备份当前数据（防后悔）
+      try {
+        const cur = await buildBackupFile(null);
+        downloadBlob(cur.blob, `restore-undo-${cur.name}`);
+      } catch (e) {}
+      applyBackupData(pending);
+      closeSheet();
+      toast(`已恢复 ${pending.schedule.length} 条日程（当前数据已自动备份为 restore-undo 文件）`, "ok");
+    });
   }
 
   /* ============================================================
@@ -4421,6 +4700,23 @@ ${scheduleContext(Store.state.prefs.chatMemory === "custom" ? { from: Store.stat
       }
     }
     // 新建 / 删除自定义标签（已在上方优先处理，此处为旧兜底占位已移除）
+    // 冲突方案选择（上轮添加撞车后的回复：方案A/B/C 或 自己给新时间）
+    if (chatDraft && chatDraft.kind === "conflict") {
+      const { det, di } = chatDraft;
+      const { task, conflicts } = det[di];
+      const m = lower.match(/^(?:方案|选)?\s*([ABC])\b/);
+      if (m) {
+        const plans = buildConflictPlans(task, conflicts);
+        const p = plans[{ A: 0, B: 1, C: 2 }[m[1]]];
+        chatDraft = null;
+        if (p) {
+          const r = applyConflictPlan(task, p);
+          return mkMsg("text", `已按方案${m[1]}处理「${task.title}」✅（${r.applied}）。还有其它要安排的吗？`);
+        }
+        return mkMsg("text", "这个方案暂时不可行，告诉我新的时间，如「改为 18 点一小时」或「顺延明天」。");
+      }
+      chatDraft = null; // 用户自己给时间：走下面的添加解析
+    }
     // 添加
     if (/添加|安排|新建|加个|记一下|提醒/.test(lower) || /[点时]/.test(lower)) {
       const res = buildFreeDemoTasks(lower, undefined, chatDraft);
@@ -4430,6 +4726,13 @@ ${scheduleContext(Store.state.prefs.chatMemory === "custom" ? { from: Store.stat
       }
       chatDraft = null;
       const t = res.tasks[0];
+      const det = conflictDetail([t]);
+      if (det.length) {
+        const plans = buildConflictPlans(t, det[0].conflicts);
+        chatDraft = { kind: "conflict", det, di: 0 };
+        const planLines = plans.map((p, i) => `方案${"ABC"[i]}：${p.desc}`).join("\n");
+        return mkMsg("text", `「${t.title}」的 ${t.startTime}~${t.endTime} 和「${det[0].conflicts.map((c) => c.title).join("、")}」时间重叠了 ⚠️\n\n${planLines}\n\n回复「方案A / 方案B / 方案C」让我处理，或直接告诉我新的时间（如「改为 18 点一小时」）。`);
+      }
       const it = Store.addSchedule({
         title: t.title,
         startTime: t.startTime,
@@ -4783,6 +5086,8 @@ ${scheduleContext(Store.state.prefs.chatMemory === "custom" ? { from: Store.stat
     initReminders();
     // AI 主动聊天：启动 15s 后首次检查，之后每 20 分钟一次；回到前台时也检查（暴露给测试/调试）
     window.__taProactive = proactiveFire;
+    // 备份编解码测试钩子
+    window.__taBk = { buildBackupFile, parseBackupText, applyBackupData, backupPayload };
     setTimeout(proactiveFire, 15 * 1000);
     setInterval(proactiveFire, 20 * 60 * 1000);
     document.addEventListener("visibilitychange", () => {
