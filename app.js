@@ -2808,28 +2808,41 @@
       return 0;
     }
   }
-  function proactiveLogOnce() {
+  function proactiveLogOnce(type) {
     try {
       const raw = JSON.parse(localStorage.getItem(PROACTIVE_KEY) || "{}");
       const n = raw.d === todayStr() ? raw.n || 0 : 0;
-      localStorage.setItem(PROACTIVE_KEY, JSON.stringify({ d: todayStr(), n: n + 1 }));
+      const types = raw.d === todayStr() && Array.isArray(raw.types) ? raw.types : [];
+      if (type && !types.includes(type)) types.push(type);
+      localStorage.setItem(PROACTIVE_KEY, JSON.stringify({ d: todayStr(), n: n + 1, types }));
     } catch (e) {}
   }
+  function proactiveTypeDone(type) {
+    try {
+      const raw = JSON.parse(localStorage.getItem(PROACTIVE_KEY) || "{}");
+      if (raw.d !== todayStr()) return false;
+      return Array.isArray(raw.types) && raw.types.includes(type);
+    } catch (e) {
+      return false;
+    }
+  }
+  // 主动消息候选：nudge=催办 / comment=日程合理性点评 / question=小提问
   function proactivePick() {
     const t = todayStr();
     const nowMin = new Date().getHours() * 60 + new Date().getMinutes();
     const today = scopeItems(Store.state.schedule, { mode: "day", anchor: t });
     if (!today.length) return null;
     const sorted = today.slice().sort((a, b) => (a.startTime || "").localeCompare(b.startTime || ""));
+    // ① 催办 nudge
     const upcoming = sorted.filter((i) => !isDone(i) && toMin(i.startTime) > nowMin);
     const next = upcoming[0];
     if (next) {
       const diff = toMin(next.startTime) - nowMin;
-      if (diff <= 20) return { text: `还有 ${diff} 分钟就到「${next.title}」了，先准备一下？`, tone: "ok" };
+      if (diff <= 20) return { type: "nudge", text: `还有 ${diff} 分钟就到「${next.title}」了，先准备一下？`, tone: "ok" };
     }
     const missed = sorted.filter((i) => !isDone(i) && toMin(i.endTime) < nowMin);
     if (missed.length && !upcoming.length)
-      return { text: `「${missed[0].title}」时间已经过了，是忘了打卡还是没来得及？`, tone: "warn" };
+      return { type: "nudge", text: `「${missed[0].title}」时间已经过了，是忘了打卡还是没来得及？`, tone: "warn" };
     const miss = {};
     Store.state.schedule.forEach((i) => {
       const d = i.date || t;
@@ -2837,9 +2850,46 @@
     });
     const missTop = Object.entries(miss).sort((a, b) => b[1] - a[1])[0];
     if (missTop && missTop[1] >= 2)
-      return { text: `「${missTop[0]}」连续 ${missTop[1]} 天没完成，要不要我帮你换个更合适的时间？`, tone: "warn" };
+      return { type: "nudge", text: `「${missTop[0]}」连续 ${missTop[1]} 天没完成，要不要我帮你换个更合适的时间？`, tone: "warn" };
     if (nowMin > 6 * 60 && sorted.length && sorted.every((i) => isDone(i)))
-      return { text: `今天的安排全部完成啦，干得漂亮！要不要安排点放松时间？`, tone: "ok" };
+      return { type: "nudge", text: `今天的安排全部完成啦，干得漂亮！要不要安排点放松时间？`, tone: "ok" };
+    // ② 合理性点评 comment（每天 ≤1 次）
+    if (!proactiveTypeDone("comment")) {
+      const tom = addDays(t, 1);
+      const tomItems = scopeItems(Store.state.schedule, { mode: "day", anchor: tom });
+      const tomHours = tomItems.reduce((s, i) => s + Math.max(0, parseHM(i.endTime) - parseHM(i.startTime)), 0);
+      if (tomItems.length && tomHours > 10)
+        return { type: "comment", text: `明天排了 ${tomHours.toFixed(1)} 小时，会不会太满了？要不要匀点到后天？`, tone: "warn" };
+      const night = sorted.filter((i) => !isDone(i) && parseHM(i.startTime) >= 21);
+      if (night.length >= 2)
+        return { type: "comment", text: `今天有 ${night.length} 个任务排在 21 点后，长期这样容易影响休息。`, tone: "warn" };
+      const wk = [];
+      let dd = addDays(t, -6),
+        g = 0;
+      while (dd <= t && g < 400) {
+        scopeItems(Store.state.schedule, { mode: "day", anchor: dd }).forEach((i) => wk.push(i));
+        dd = addDays(dd, 1);
+        g++;
+      }
+      if (wk.length >= 5) {
+        const rate = wk.filter((i) => isDone(i)).length / wk.length;
+        if (rate < 0.4) return { type: "comment", text: `最近一周完成率只有 ${Math.round(rate * 100)}%，目标是不是定太高了？可以从减量开始。`, tone: "info" };
+      }
+    }
+    // ③ 小提问 question（每天 ≤1 次）
+    if (!proactiveTypeDone("question")) {
+      const freq = {};
+      Store.state.schedule.forEach((i) => {
+        const d = i.date || t;
+        if (d >= addDays(t, -14) && d <= addDays(t, 14)) freq[i.title] = (freq[i.title] || 0) + 1;
+      });
+      const topQ = Object.entries(freq).sort((a, b) => b[1] - a[1])[0];
+      if (topQ && topQ[1] >= 3)
+        return { type: "question", text: `我注意到「${topQ[0]}」最近出现得很频繁，是你最近的重点吗？要不要帮你固定成重复日程？`, tone: "info" };
+      const nightCnt = Store.state.schedule.filter((i) => parseHM(i.startTime) >= 21).length;
+      if (nightCnt >= 3)
+        return { type: "question", text: `你好像经常把任务排在深夜，是习惯还是白天没空？可以聊聊怎么调整。`, tone: "info" };
+    }
     return null;
   }
   function proactiveChatPush(text, via) {
@@ -2857,17 +2907,25 @@
     if (proactiveTodayCount() >= 4) return;
     const hit = proactivePick();
     if (!hit) return;
-    proactiveLogOnce();
+    proactiveLogOnce(hit.type);
+    const prefix = hit.type === "nudge" ? "（主动提醒）" : "（AI 想聊聊）";
+    const text = prefix + hit.text;
     if (document.getElementById("chatLayer")) {
-      proactiveChatPush(`（主动提醒）${hit.text}`);
+      proactiveChatPush(text);
     } else {
       toast(`AI 主动提醒：${hit.text}`, hit.tone === "warn" ? "warn" : "ok", {
         label: "去看看",
         onClick: () => {
           openChat();
-          setTimeout(() => proactiveChatPush(hit.text), 200);
+          setTimeout(() => proactiveChatPush(text), 200);
         },
       });
+      // 系统通知：有权限时后台/锁屏也能看到（仅提醒一次，不重复）
+      if ("Notification" in window && Notification.permission === "granted") {
+        try {
+          new Notification("TimeAgent 主动提醒", { body: hit.text });
+        } catch (e) {}
+      }
     }
   }
 
