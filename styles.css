@@ -408,6 +408,9 @@ ul { list-style: none; }
 .prio-seg .seg-btn { padding: 5px 14px; }
 .prio-seg .seg-btn[data-prio="高"].on { color: #fff; background: #E24B4A; border-color: #E24B4A; }
 
+/* 归类到大类选择器（分类管理） */
+.cat-select { margin-top: 6px; font-size: 11px; color: var(--t2); background: var(--surface-solid); border: 1px solid var(--line); border-radius: var(--r-pill); padding: 3px 8px; max-width: 130px; }
+
 /* 首页 AI 行动卡（agent 主动观察 → 可执行动作） */
 .agent-actions { display: flex; flex-direction: column; gap: 8px; }
 .agent-action { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-radius: var(--r-md); background: var(--surface); border: 1px solid var(--line); cursor: pointer; transition: transform .12s, border-color .15s, box-shadow .15s; }

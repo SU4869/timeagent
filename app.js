@@ -112,6 +112,14 @@
     const custom = Store.state.customTags.find((t) => t.tag === tag);
     return custom ? custom.color : "#A1A1AA";
   }
+  // 标签 → 正经大类：内置标签大类=自身；自定义标签取 cat 字段（默认"其他"），
+  // 让"中二风格"的自定义标签也能归到学习/工作等正经大类统计
+  const CATS = ["学习", "工作", "运动", "饮食", "休息", "社交", "其他"];
+  function tagCategory(tag) {
+    if (TAG_MAP[tag]) return tag;
+    const custom = Store.state.customTags.find((t) => t.tag === tag);
+    return custom && CATS.includes(custom.cat) ? custom.cat : "其他";
+  }
   function tagIcon(tag, color) {
     return `<span class="tag-icon" style="background:${color}" aria-hidden="true">${esc(tag.charAt(0))}</span>`;
   }
@@ -697,6 +705,18 @@
       efficiency: list.length ? Math.round((list.filter((i) => isDone(i)).length / list.length) * 100) : 0,
     };
   }
+  // 大类汇总：把 timeDist 按"标签所属正经大类"聚合（自定义/趣味标签归入大类）
+  function catDistOf(stats) {
+    const cm = {};
+    (stats.timeDist || []).forEach((d) => {
+      const c = tagCategory(d.tag);
+      cm[c] = (cm[c] || 0) + d.hours;
+    });
+    const total = Object.values(cm).reduce((s, v) => s + v, 0);
+    return Object.keys(cm)
+      .map((cat) => ({ cat, hours: cm[cat], percent: total ? Math.round((cm[cat] / total) * 100) : 0, color: getColorForTag(cat) }))
+      .sort((a, b) => b.hours - a.hours);
+  }
   function computeStats() {
     return computeStatsFor(Store.state.schedule);
   }
@@ -853,7 +873,8 @@
       `你是用户的私人时间管理洞察助手。今天真实日期：${todayStr()}。\n` +
       `关于用户的长期习惯观察（供参考，与下方日程矛盾时以下方日程为准）：${buildUserProfile() || "（历史数据不足）"}\n` +
       `用户当前查看「${label}」概览，该周期严格只有下面列出的 ${scoped.length} 个日程（${withDate ? "日期 " : ""}时间 事项 状态 /分类）：\n${rows || "（该周期暂无日程）"}\n` +
-      `【硬性要求】你的分析必须完全基于上述真实日程，严禁臆造任何未列出的日程、数字或完成情况；若只有 1 个日程，就不要谈"分类失衡/多任务协调"，请聚焦这一个事项本身给建议。\n` +
+      `【硬性要求】你的分析必须完全基于上述真实日程，严禁臆造任何未列出的日程、数字或完成情况；若只有 1 个日程，就不要谈"分类失衡/多任务协调"，请聚焦这一个事项本身给建议。` +
+      `用户的自定义标签可能是个性化/趣味命名（如中二风格），请依据日程标题理解其真实性质，并按标签所属的正经大类（学习/工作/运动/饮食/休息/社交/其他）归类分析，不要被标签名字迷惑。\n` +
       `请输出最多 3 句：① 一句话贴合实际的总评；② 1 条针对现有日程的具体可执行改进建议（如把某事项提前、补全休息、降低密度）；③ 如需，1 句鼓励。` +
       `全文 90 字以内，自然中文，不用列表符号、不用加粗、不用 emoji、不夸张。`;
     try {
@@ -1892,6 +1913,24 @@
           <div class="divider"></div>${perTag}</div>`
       : `<div class="empty">${emptyArt("stats")}<div class="t">暂无统计数据</div><div class="s">先去首页规划时间，这里会自动汇总</div></div>`;
 
+    // 大类汇总：自定义/趣味标签归入正经大类统计
+    const catRows = catDistOf(stats)
+      .map(
+        (d) => `<div class="progress-row">
+          <div class="progress-head"><span class="dot" style="background:${d.color}"></span>
+            <span class="name">${esc(d.cat)}</span>
+            <span class="val">${d.hours.toFixed(1)}h</span><span class="pct">${d.percent}%</span></div>
+          <div class="bar"><i style="background:${d.color}" data-w="${d.percent}"></i></div>
+        </div>`
+      )
+      .join("");
+    const catCard =
+      stats.totalHours && catRows
+        ? `<div class="card"><div class="card-title">${svg("target")} 大类汇总</div>
+            <div class="mt2">${catRows}</div>
+            <div class="card-sub mt1">按正经大类（学习/工作/运动…）汇总，自定义标签自动归入所属大类</div></div>`
+        : "";
+
     const taskList = scoped.length
       ? `<div class="card"><div class="card-title">${svg("list")} ${label}事项明细</div><div class="mt2">${perTask}</div></div>`
       : "";
@@ -1901,6 +1940,7 @@
       ${scopeBar()}
       ${reportEntry}
       ${taskList}
+      ${catCard}
       ${breakdown}
     </div>`;
 
@@ -2446,7 +2486,11 @@
         const def = !!TAG_MAP[t.tag];
         return `<div class="sch-item" style="margin-bottom:8px">
           <span class="tag" style="background:${t.color};color:${contrastText(t.color)}">${esc(t.tag)}</span>
-          <div class="sch-main"><div class="sch-title" style="font-size:13px">${t.color}</div></div>
+          <div class="sch-main"><div class="sch-title" style="font-size:13px">${t.color}</div>
+            ${def ? "" : `<select class="cat-select" data-cat-set="${esc(t.tag)}" title="归类到正经大类（统计按此汇总）">
+              ${CATS.map((c) => `<option value="${c}" ${tagCategory(t.tag) === c ? "selected" : ""}>归类 · ${c}</option>`).join("")}
+            </select>`}
+          </div>
           ${def ? '<span class="muted" style="font-size:11px">内置</span>' : `<button class="sch-del" data-act="del-cat" data-tag="${esc(t.tag)}">${svg("trash")}</button>`}
         </div>`;
       })
@@ -2484,6 +2528,16 @@
           el.querySelector("#catNewName").addEventListener("keydown", (e) => {
             if (e.key === "Enter") el.querySelector("#catNewAdd").click();
           });
+          el.querySelectorAll("[data-cat-set]").forEach((sel) =>
+            sel.addEventListener("change", () => {
+              const ct = Store.state.customTags.find((x) => x.tag === sel.dataset.catSet);
+              if (ct) {
+                ct.cat = sel.value;
+                Store.notify();
+                toast(`已将「${ct.tag}」归类到大类「${sel.value}」，统计按此汇总 ✅`, "ok");
+              }
+            })
+          );
         },
       }
     );
@@ -2623,7 +2677,8 @@
               `请为「${label}」写一份简短温暖的时间日报。今天日期：${todayStr()}。\n` +
               `关于用户的长期习惯观察（供参考，与下方日程矛盾时以下方日程为准）：${buildUserProfile() || "（历史数据不足）"}\n` +
               `以下是用户「${label}」严格全部 ${scoped.length} 个日程（${withDate ? "日期 " : ""}时间 事项 状态 /分类）：\n${rows || "（该时间段暂无日程）"}\n` +
-              `【硬性要求】必须完全基于上述真实日程写作，严禁臆造任何未列出的日程、数字或完成情况；若只有 1 个日程，就围绕这一个事项本身展开，不要谈"多任务协调/分类失衡"。\n` +
+              `【硬性要求】必须完全基于上述真实日程写作，严禁臆造任何未列出的日程、数字或完成情况；若只有 1 个日程，就围绕这一个事项本身展开，不要谈"多任务协调/分类失衡"。` +
+              `用户的自定义标签可能是个性化/趣味命名，请依据日程标题理解其真实性质，并按标签所属的正经大类归类分析，不要被标签名字迷惑。\n` +
               `请输出：一句话总评；2-3 条亮点或发现；1 条具体的改进建议。全文 150 字以内，短段落，语气自然，不要用夸张赞美。`;
             callLLM(
               [
@@ -3575,6 +3630,7 @@
                   role: "system",
                   content: `你是 TimeAgent 智能时间管家，用简洁友好的中文回答。今天日期：${todayStr()}。${personaPromptLine()}
 你有权查看和操作 app 内全部日程数据（查询任意日期、添加、删除、打卡、改期）。
+注意：用户的自定义标签可能是个性化/趣味命名（如中二风格），请依据日程标题理解其真实性质，并按标签所属的正经大类（学习/工作/运动/饮食/休息/社交/其他）归类分析，不要被标签名字迷惑。
 关于用户的长期习惯观察（供参考，与下方日程矛盾时以下方日程为准）：${buildUserProfile() || "（历史数据不足）"}
 当前记忆范围：${(Store.state.prefs.chatMemory === "custom" ? `自定义区间 ${Store.state.prefs.chatMemoryFrom}~${Store.state.prefs.chatMemoryTo}` : chatMemoryLabel(Store.state.prefs.chatMemory || "week"))}。范围内真实日程如下（范围外数据当前不可见，用户问到时如实说明，或建议切换记忆范围）：
 ${scheduleContext(Store.state.prefs.chatMemory === "custom" ? { from: Store.state.prefs.chatMemoryFrom, to: Store.state.prefs.chatMemoryTo } : Store.state.prefs.chatMemory || "week")}
@@ -3582,8 +3638,8 @@ ${scheduleContext(Store.state.prefs.chatMemory === "custom" ? { from: Store.stat
 【排期】{"tasks":[{"title":"日程名","startTime":"HH:MM","endTime":"HH:MM","tag":"学习","desc":"可选","date":"YYYY-MM-DD(可选,默认今天)"}]}【/排期】
 规则：时间用 24 小时制；tag 只能从 [学习,工作,运动,饮食,休息,社交,其他] 中选一个；结束时间未说则按常见时长合理推断；日期默认今天，用户说"明天/后天"要换算成具体日期；若新任务与上面已有日程时间重叠，请自动微调 15-30 分钟避开冲突。没有排期需求时不要输出【排期】标记。
 若用户要求删除/标记完成/改期已有日程，则在回复末尾单独输出一行：
-【操作】{"type":"delete|done|move|rename|retag|prio|tag-add|tag-del","title":"日程名或标签名","newTitle":"新名称(仅rename)","tag":"新标签(仅retag)","priority":"高|中|低(仅prio)","date":"YYYY-MM-DD(可选,精确匹配某天)","startTime":"HH:MM(仅move需要)"}【/操作】
-（delete=删除，done=打卡完成，move=改期需给新 startTime（可加 date 一起改日期），rename=改名称需给 newTitle，retag=改标签需给 tag，prio=改优先级需给 priority；tag-add=新建自定义标签（title 为标签名），tag-del=删除自定义标签（内置分类不能删）；按上面日程中的标题匹配，同名日程可用 date 精确到某天；重复日程删除默认删整个系列并告知用户；【操作】与【排期】不要同时输出，没有匹配的日程时也要输出该行并在正文说明）。`,
+【操作】{"type":"delete|done|move|rename|retag|prio|classify|tag-add|tag-del","title":"日程名或标签名","newTitle":"新名称(仅rename)","tag":"新标签(仅retag)","priority":"高|中|低(仅prio)","cat":"学习|工作|运动|饮食|休息|社交|其他(仅classify)","date":"YYYY-MM-DD(可选,精确匹配某天)","startTime":"HH:MM(仅move需要)"}【/操作】
+（delete=删除，done=打卡完成，move=改期需给新 startTime（可加 date 一起改日期），rename=改名称需给 newTitle，retag=改标签需给 tag，prio=改优先级需给 priority，classify=把自定义标签归类到正经大类需给 cat（内置大类无需归类）；tag-add=新建自定义标签（title 为标签名），tag-del=删除自定义标签（内置分类不能删）；按上面日程中的标题匹配，同名日程可用 date 精确到某天；重复日程删除默认删整个系列并告知用户；【操作】与【排期】不要同时输出，没有匹配的日程时也要输出该行并在正文说明）。`,
                 },
                 ...history,
                 { role: "user", content: text },
@@ -3725,6 +3781,19 @@ ${scheduleContext(Store.state.prefs.chatMemory === "custom" ? { from: Store.stat
                     Store.state.customTags = Store.state.customTags.filter((x) => x.tag !== name);
                     results.push(`已删除标签「${name}」（已有日程颜色不受影响）`);
                   } else results.push(def ? `「${name}」是内置分类，不能删除` : `没找到分类「${name}」`);
+                } else if (op.type === "classify") {
+                  // Agent 归类：把自定义/趣味标签归到正经大类（统计按大类汇总）
+                  const name = t;
+                  const cat = CATS.includes(op.cat) ? op.cat : "";
+                  if (TAG_MAP[name]) {
+                    results.push(`「${name}」本身就是正经大类，无需归类。`);
+                  } else {
+                    const ct = Store.state.customTags.find((x) => x.tag === name);
+                    if (ct && cat) {
+                      ct.cat = cat;
+                      results.push(`已把标签「${name}」归类到大类「${cat}」，相关日程将按${cat}统计`);
+                    } else results.push(`没找到自定义标签「${name}」或大类无效（可选：${CATS.join("、")}）`);
+                  }
                 }
               });
               const cleanOps = replyText.replace(/【操作】[\s\S]*?【\/操作】/g, "").trim();
@@ -3829,6 +3898,29 @@ ${scheduleContext(Store.state.prefs.chatMemory === "custom" ? { from: Store.stat
         return mkMsg("text", `已删除标签「${name}」（已有日程的颜色不受影响）。`);
       }
       return mkMsg("text", `没找到标签「${name}」。`);
+    }
+    // 归类到正经大类（自定义/趣味标签 → 学习/工作/运动…）
+    const cl = lower.match(/把(.+?)(?:归类到|归到|划到|算到|算作|放进)(.+)/);
+    if (cl) {
+      const tagName = cl[1].replace(/[。.，,吗？?\s]/g, "").trim();
+      const cat = CATS.find((c) => cl[2].includes(c)) || "";
+      if (TAG_MAP[tagName]) return mkMsg("text", `「${tagName}」本身就是正经大类，不用再归类。`);
+      const ct = Store.state.customTags.find((x) => x.tag === tagName);
+      if (ct && cat) {
+        ct.cat = cat;
+        Store.notify();
+        return mkMsg("text", `已把标签「${tagName}」归类到大类「${cat}」，相关日程统计会按${cat}汇总 ✅`);
+      }
+      return mkMsg("text", `没找到自定义标签「${tagName}」或归类无效。可用大类：${CATS.join("、")}。`);
+    }
+    // 总结归类：各大类时间占比
+    if (/总结.*(归类|分类)|时间都花|时间(用|花)(在|到)|归类.*(情况|总结|看看)/.test(lower)) {
+      const stats = computeStats();
+      if (!stats.timeDist.length) return mkMsg("text", "还没有日程数据，先安排几件事，我就能帮你归类总结啦～");
+      const cd = catDistOf(stats);
+      const lines = cd.map((d) => `• ${d.cat} ${d.hours.toFixed(1)}h（${d.percent}%）`).join("\n");
+      const top = cd[0];
+      return mkMsg("text", `按正经大类看，你的时间主要花在：\n${lines}\n\n${top ? `「${top.cat}」占比最高，是你最近的重点。` : ""}`);
     }
     // 删除（支持日期限定 + 多候选确认）
     if (/删除|去掉|取消/.test(lower) && !/添加|新建|安排/.test(lower)) {
