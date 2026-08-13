@@ -458,6 +458,8 @@ ul { list-style: none; }
 /* ===================== 首页：今日焦点条 ===================== */
 .focus-bar { display: flex; align-items: center; gap: 10px; border-radius: var(--r-md); padding: 11px 13px; margin: 0 0 10px; cursor: pointer; transition: transform .12s ease; border: 1px solid var(--line); }
 .focus-bar:active { transform: scale(.985); }
+.focus-bar.plain { cursor: default; }
+.focus-bar.plain:active { transform: none; }
 .focus-bar.ok { background: color-mix(in srgb, var(--ok, #10B981) 10%, var(--surface-solid)); }
 .focus-bar.warn { background: color-mix(in srgb, var(--warning, #F5A623) 12%, var(--surface-solid)); }
 .focus-bar.info { background: var(--primary-soft); }

@@ -1217,7 +1217,8 @@
     const upcoming = sorted.filter((i) => !isDone(i) && toMin(i.startTime) > nowMin);
     let icon = "clock",
       tone = "info",
-      text = "";
+      text = "",
+      interactive = true;
     if (ongoing.length) {
       icon = "bolt";
       tone = "ok";
@@ -1235,17 +1236,21 @@
         text = `距离「${n.title}」还有约 ${fmtDurMin(diff)}，当前空闲${missed.length ? `，另有 ${missed.length} 项过期未打卡可先处理` : "，可安排碎片任务或休息"}`;
       }
     } else if (missed.length) {
+      // 已过未打卡：仅作信息展示，不作为 AI 排期入口（避免与对话舱重复）
       icon = "bolt";
       tone = "warn";
       text = `${missed.length} 项日程已过未打卡：${missed.slice(0, 2).map((i) => "「" + i.title + "」").join("、")}${missed.length > 2 ? " 等" : ""}`;
+      interactive = false;
     } else {
       icon = "check";
       tone = "ok";
       text = "今日安排已全部结束，好好休息";
     }
-    return `<div class="focus-bar ${tone}" role="button" tabindex="0" data-act="open-planner" title="点击用一句话安排新日程">
-      <span class="fb-ico">${svg(icon)}</span><span class="fb-txt">${esc(text)}</span><span class="fb-go">${svg("chevron")}</span>
-    </div>`;
+    return interactive
+      ? `<div class="focus-bar ${tone}" role="button" tabindex="0" data-act="open-planner" title="点击用一句话安排新日程">
+          <span class="fb-ico">${svg(icon)}</span><span class="fb-txt">${esc(text)}</span><span class="fb-go">${svg("chevron")}</span>
+        </div>`
+      : `<div class="focus-bar ${tone} plain"><span class="fb-ico">${svg(icon)}</span><span class="fb-txt">${esc(text)}</span></div>`;
   }
 
   /* ---------- 首页「一句话排期」快捷输入条（P1） ---------- */
