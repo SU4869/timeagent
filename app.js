@@ -718,8 +718,7 @@
       .sort((a, b) => b.hours - a.hours);
   }
   function computeStats() {
-    return computeStatsFor(Store.state.schedule);
-  }
+    return computeStatsFor(Store.state.schedule);  }
 
   // 空闲时段推荐
   function freeSlots() {
@@ -738,6 +737,50 @@
       }
     }
     return slots;
+  }
+
+  /* ============================================================
+     目标系统（教练层）：用户设定目标 → AI 守护进度
+     - prefs.goals = [{ id, title, cat(大类), period("day"|"week"), hours }]
+     - goalProgress() 统计当前周期(今天/本周)目标大类的投入时长与达标情况
+     ============================================================ */
+  function goalProgress() {
+    const goals = Store.state.prefs.goals || [];
+    const t = todayStr();
+    return goals.map((gl) => {
+      const items =
+        gl.period === "day"
+          ? scopeItems(Store.state.schedule, { mode: "day", anchor: t })
+          : scopeItems(Store.state.schedule, { mode: "week", anchor: t });
+      const hours = items
+        .filter((i) => tagCategory(i.tag) === gl.cat)
+        .reduce((s, i) => s + Math.max(0, parseHM(i.endTime) - parseHM(i.startTime)), 0);
+      return {
+        ...gl,
+        hours,
+        done: hours >= gl.hours,
+        pct: gl.hours ? Math.min(100, Math.round((hours / gl.hours) * 100)) : 0,
+        remain: Math.max(0, Math.round((gl.hours - hours) * 10) / 10),
+      };
+    });
+  }
+  function goalText(g) {
+    return `${g.title}（${g.period === "day" ? "每天" : "每周"} ${g.hours}h · ${g.cat}类）`;
+  }
+  // 近 30 天完成时间偏差均值（≥15 分钟才返回，供动态提醒补偿）
+  function lateMinAvg() {
+    const t = todayStr();
+    const dev = [];
+    Store.state.schedule.forEach((i) => {
+      if (!isDone(i) || !i.doneAt) return;
+      const d = i.date || t;
+      if (d < addDays(t, -30) || d > t) return;
+      const dt = new Date(i.doneAt);
+      dev.push(dt.getHours() * 60 + dt.getMinutes() - parseHM(i.endTime));
+    });
+    if (dev.length < 3) return 0;
+    const avg = dev.reduce((s, v) => s + v, 0) / dev.length;
+    return avg >= 15 ? Math.round(avg) : 0;
   }
 
   // 生成日程上下文（供 AI 感知用户真实日程，避免模型臆造/撞期）
@@ -940,6 +983,7 @@
     "toggle-form": "展开 / 收起添加日程表单",
     "save-api": "保存 API 配置（填 Key 即启用在线 AI）",
     "open-persona": "调教 AI 的语气风格，可命名备份多套人格",
+    "open-goals": "设定每天/每周在某大类的投入目标，AI 会跟踪并提醒进度",
     "open-catman": "管理分类标签：自定义命名、归入正经大类",
     "del-cat": "删除自定义分类（内置分类不可删）",
     "open-history": "查看历史日程记录",
@@ -2120,6 +2164,8 @@
           <div class="divider"></div>
           <div class="menu-item" data-act="open-persona">${svgWrap("heart")}<span>Agent 人格调教</span><span class="muted" style="font-size:11px">${personaStyle() ? "自定义" : "默认"}</span>${svgWrap("chevron")}</div>
           <div class="divider"></div>
+          <div class="menu-item" data-act="open-goals">${svgWrap("target")}<span>目标管理</span><span class="muted" style="font-size:11px">${(Store.state.prefs.goals || []).length} 个</span>${svgWrap("chevron")}</div>
+          <div class="divider"></div>
           <div class="menu-item" data-act="open-history">${svgWrap("folder")}<span>历史记录</span>${svgWrap("chevron")}</div>
           <div class="divider"></div>
           <div class="menu-item" data-act="open-prefs">${svgWrap("brain")}<span>AI 偏好设置</span>${svgWrap("chevron")}</div>
@@ -2814,6 +2860,87 @@
   }
 
   /* ============================================================
+     目标管理（我的页入口）：列表进度 + 新增 + 删除
+     ============================================================ */
+  function openGoals() {
+    const prefs = Store.state.prefs;
+    const progress = goalProgress();
+    const listHtml = progress.length
+      ? progress
+          .map(
+            (g) => `<div class="sch-item" style="margin-bottom:8px;align-items:center">
+            <div class="sch-main" style="flex:1">
+              <div class="sch-title" style="font-size:13px">${esc(goalText(g))} <span class="${g.done ? "ok" : "warn"}">${g.done ? "✅ 已达标" : `还差 ${g.remain}h`}</span></div>
+              <div class="bar mt1" style="height:6px"><i style="background:${g.done ? "var(--ok, #16A34A)" : "var(--primary)"}" data-w="${g.pct}"></i></div>
+            </div>
+            <button class="sch-del" data-gdel="${esc(g.title)}">${svg("trash")}</button>
+          </div>`
+          )
+          .join("")
+      : `<div class="card-sub">还没有目标。设一个，AI 就会帮你守护进度，比如「每天学习 1 小时」。</div>`;
+    openSheet(
+      `<div class="sheet-head"><div class="h">🎯 目标管理</div><button class="x" data-close>${svg("close")}</button></div>
+       <div class="card-sub">设定"每天/每周在某个大类投入多少小时"，AI 会跟踪进度并主动提醒你。</div>
+       <div class="mt2">${listHtml}</div>
+       <div class="divider mt2"></div>
+       <div class="form-label mt2">新增目标</div>
+       <div class="form-section">
+         <div class="form-label">名称（如：学习 / 健身）</div>
+         <input class="input" id="gName" placeholder="目标名" maxlength="8" />
+       </div>
+       <div class="flex" style="gap:8px;margin-top:8px">
+         <select class="cat-select" id="gCat" style="flex:1;max-width:none">
+           ${CATS.map((c) => `<option value="${c}">大类 · ${c}</option>`).join("")}
+         </select>
+         <select class="cat-select" id="gPeriod" style="flex:1;max-width:none">
+           <option value="day">每天</option><option value="week">每周</option>
+         </select>
+       </div>
+       <div class="flex gap1 mt2" style="align-items:center">
+         <input class="input" id="gHours" type="number" min="0.5" step="0.5" value="1" style="flex:1" />
+         <span class="card-sub">小时</span>
+         <button class="btn" id="gAdd" style="flex:0 0 auto">${svg("plus")} 添加</button>
+       </div>`,
+      {
+        onOpen: (el) => {
+          if (!prefs.goals) prefs.goals = [];
+          el.querySelector("#gAdd").addEventListener("click", () => {
+            const title = el.querySelector("#gName").value.trim();
+            const cat = el.querySelector("#gCat").value;
+            const period = el.querySelector("#gPeriod").value;
+            const hours = parseFloat(el.querySelector("#gHours").value);
+            if (!title || !hours || hours <= 0) {
+              toast("请填写目标名和有效小时数", "warn");
+              return;
+            }
+            if (prefs.goals.some((x) => x.title === title)) {
+              toast("目标已存在", "warn");
+              return;
+            }
+            prefs.goals.push({ id: uid(), title: title.slice(0, 8), cat, period, hours });
+            Store.notify();
+            closeSheet();
+            openGoals();
+            toast(`已设置目标「${title}」🎯`, "ok");
+          });
+          el.querySelectorAll("[data-gdel]").forEach((b) =>
+            b.addEventListener("click", () => {
+              prefs.goals = prefs.goals.filter((x) => x.title !== b.dataset.gdel);
+              Store.notify();
+              closeSheet();
+              openGoals();
+              toast(`已删除目标「${b.dataset.gdel}」`, "ok");
+            })
+          );
+          requestAnimationFrame(() => {
+            el.querySelectorAll(".bar > i").forEach((b) => (b.style.width = b.dataset.w + "%"));
+          });
+        },
+      }
+    );
+  }
+
+  /* ============================================================
      AI 日报浮层
      ============================================================ */
   function openReport() {
@@ -3215,11 +3342,13 @@
     const [h, m] = it.startTime.split(":").map(Number);
     const target = new Date();
     target.setHours(h, m, 0, 0);
-    target.setMinutes(target.getMinutes() - (it.remindOffset || 10));
+    // 动态提醒：你平均比计划晚完成 X 分钟 → 提醒自动提前 X 分钟
+    const offset = (it.remindOffset || 10) + lateMinAvg();
+    target.setMinutes(target.getMinutes() - offset);
     const diff = target.getTime() - Date.now();
     if (diff <= 0 || diff > 24 * 3600 * 1000) return;
     setTimeout(() => {
-      const msg = `「${it.title}」将在 ${it.remindOffset} 分钟后开始（${it.startTime}）`;
+      const msg = `「${it.title}」将在 ${offset} 分钟后开始（${it.startTime}），记得准备一下～`;
       if ("Notification" in window && Notification.permission === "granted") {
         try {
           new Notification("TimeAgent 日程提醒", { body: msg });
@@ -3326,6 +3455,13 @@
       if (wk.length >= 5) {
         const rate = wk.filter((i) => isDone(i)).length / wk.length;
         if (rate < 0.4) return { type: "comment", text: `最近一周完成率只有 ${Math.round(rate * 100)}%，目标是不是定太高了？可以从减量开始。`, tone: "info" };
+      }
+      // 目标守护：有未达标目标且今天有空闲 → 提醒补上
+      const pg = goalProgress().filter((g) => !g.done);
+      const hasFree = freeSlots().length > 0;
+      if (pg.length && hasFree) {
+        const g0 = pg[0];
+        return { type: "comment", text: `目标「${g0.title}」${g0.period === "day" ? "今天" : "本周"}还差 ${g0.remain} 小时，今天有空闲时段，要不要安排上？`, tone: "info" };
       }
     }
     // ③ 小提问 question（每天 ≤1 次）
@@ -4102,6 +4238,17 @@ ${scheduleContext(Store.state.prefs.chatMemory === "custom" ? { from: Store.stat
       const top = cd[0];
       return mkMsg("text", `按正经大类看，你的时间主要花在：\n${lines}\n\n${top ? `「${top.cat}」占比最高，是你最近的重点。` : ""}`);
     }
+    const gdel = lower.match(/删除目标\s*(.+)/);
+    if (gdel) {
+      const name = gdel[1].replace(/[。.，,！!？?\s]/g, "").trim();
+      const prefs = Store.state.prefs;
+      if (prefs.goals && prefs.goals.some((x) => x.title === name)) {
+        prefs.goals = prefs.goals.filter((x) => x.title !== name);
+        Store.notify();
+        return mkMsg("text", `已删除目标「${name}」。`);
+      }
+      return mkMsg("text", `没找到目标「${name}」，可用：${(prefs.goals || []).map((x) => x.title).join("、") || "（暂无）"}`);
+    }
     // 删除（支持日期限定 + 多候选确认）
     if (/删除|去掉|取消/.test(lower) && !/添加|新建|安排/.test(lower)) {
       let date = "";
@@ -4192,6 +4339,45 @@ ${scheduleContext(Store.state.prefs.chatMemory === "custom" ? { from: Store.stat
       const applied = applyReplan(res.plan);
       const lines = res.plan.map((p) => (p.drop ? `• ${p.title}：放不下，建议顺延明天` : `• ${p.title}：${p.start}~${p.end}`)).join("\n");
       return mkMsg("text", `已按优先级+空闲时间优化今天（更新 ${applied} 项）：\n${lines}\n\n高优先级优先，帮你保住最重要的～`);
+    }
+    // 目标：设置 / 进度 / 删除
+    const gset = lower.match(/设置(?:目标)?\s*(每天|每周)?\s*(.+?)\s*(\d+(?:\.\d+)?)\s*小时/);
+    if (gset) {
+      const prefs = Store.state.prefs;
+      if (!prefs.goals) prefs.goals = [];
+      const period = gset[1] === "每周" ? "week" : "day";
+      const title = gset[2].replace(/[。.，,！!？?\s]/g, "").trim() || "目标";
+      const hours = parseFloat(gset[3]);
+      const cat = CATS.find((c) => gset[2].includes(c)) || "其他";
+      if (prefs.goals.some((x) => x.title === title)) prefs.goals = prefs.goals.filter((x) => x.title !== title);
+      prefs.goals.push({ id: uid(), title: title.slice(0, 8), cat, period, hours });
+      Store.notify();
+      return mkMsg("text", `已设置目标：${gset[1] || "每天"}「${title}」${hours} 小时（归入${cat}类）🎯 我会帮你盯着进度。`);
+    }
+    if (/目标(进度|情况)|目标.*(怎么样|如何|看看)|看看.*目标/.test(lower)) {
+      const pg = goalProgress();
+      if (!pg.length) return mkMsg("text", "还没有目标哦，试试「设置目标 每天学习1小时」～");
+      const lines = pg.map((g) => `• ${g.title}：${g.hours.toFixed(1)}h/${g.hours}h（${g.pct}%）${g.done ? " ✅" : `，还差 ${g.remain}h`}`).join("\n");
+      return mkMsg("text", `目标进度：\n${lines}`);
+    }
+    // 完成度预测
+    if (/预测|大概能完成|能完成多少|今天能完成/.test(lower)) {
+      const t = todayStr();
+      const today = scopeItems(Store.state.schedule, { mode: "day", anchor: t });
+      const undone = today.filter((i) => !isDone(i));
+      if (!undone.length) return mkMsg("text", "今天的事项都完成啦，不需要预测～");
+      const wk = [];
+      let dd = addDays(t, -13),
+        g = 0;
+      while (dd <= t && g < 400) {
+        scopeItems(Store.state.schedule, { mode: "day", anchor: dd }).forEach((i) => wk.push(i));
+        dd = addDays(dd, 1);
+        g++;
+      }
+      const rate = wk.length ? wk.filter((i) => isDone(i)).length / wk.length : 0.6;
+      const predict = Math.max(0, Math.round(undone.length * rate));
+      const late = lateMinAvg();
+      return mkMsg("text", `按你近两周 ${Math.round(rate * 100)}% 的完成率，今天剩余 ${undone.length} 项，预计能完成 ${predict} 项${late ? `（你平均比计划晚 ${late} 分钟，建议留点缓冲）` : "。"}`);
     }
     // 重命名日程
     const rn = lower.match(/把(.+?)(?:改名为|改名成|重命名(?:成|为))(.+)/);
@@ -4439,6 +4625,9 @@ ${scheduleContext(Store.state.prefs.chatMemory === "custom" ? { from: Store.stat
         break;
       case "open-persona":
         openPersona();
+        break;
+      case "open-goals":
+        openGoals();
         break;
       case "del-cat": {
         const tag = t.dataset.tag;
