@@ -414,7 +414,7 @@
             this.state.schedule = Array.isArray(p.schedule)
               ? p.schedule
                   .filter((i) => i && i.title != null)
-                  .map((i) => Object.assign({ date: todayStr(), isCompleted: false, isFresh: false, desc: "", repeat: "none", remind: false, remindOffset: 10, doneDates: [] }, i))
+                  .map((i) => Object.assign({ date: todayStr(), isCompleted: false, isFresh: false, desc: "", repeat: "none", remind: false, remindOffset: 10, doneDates: [], priority: "中", doneAt: null, doneAtMap: null }, i))
               : [];
             this.state.chat = Array.isArray(p.chat) ? p.chat : [];
             this.state.apiKey = typeof p.apiKey === "string" ? p.apiKey : "";
@@ -455,7 +455,7 @@
     },
     addSchedule(item) {
       const it = Object.assign(
-        { id: uid(), isCompleted: false, date: todayStr(), isFresh: false, desc: "", repeat: "none", remind: false, remindOffset: 10, doneDates: [] },
+        { id: uid(), isCompleted: false, date: todayStr(), isFresh: false, desc: "", repeat: "none", remind: false, remindOffset: 10, doneDates: [], priority: "中", doneAt: null, doneAtMap: null },
         item
       );
       this.state.schedule.push(it);
@@ -481,6 +481,7 @@
       const i = this.state.schedule.findIndex((x) => x.id === id);
       if (i < 0) return;
       const it = this.state.schedule[i];
+      const ts = Date.now();
       if (it.repeat && it.repeat !== "none") {
         // 重复日程：按出现日期切换完成态，互不影响
         const arr = it.doneDates ? it.doneDates.slice() : [];
@@ -488,8 +489,14 @@
         if (k >= 0) arr.splice(k, 1);
         else arr.push(date);
         it.doneDates = arr;
+        // 记录本次完成时间（按日期键），供计划偏差分析
+        const m = it.doneAtMap ? Object.assign({}, it.doneAtMap) : {};
+        if (k >= 0) delete m[date];
+        else m[date] = ts;
+        it.doneAtMap = m;
       } else {
         it.isCompleted = !it.isCompleted;
+        it.doneAt = it.isCompleted ? ts : null;
       }
       this.notify();
     },
@@ -1014,6 +1021,11 @@
     const l = it.repeat === "daily" ? "每天" : it.repeat === "weekly" ? "每周" : "";
     return l ? `<span class="repeat-badge" title="重复日程">${svg("repeat")}${l}</span>` : "";
   }
+  function prioBadge(it) {
+    if (it.priority === "高") return `<span class="prio-badge high" title="高优先级">高</span>`;
+    if (it.priority === "低") return `<span class="prio-badge low" title="低优先级">低</span>`;
+    return "";
+  }
   function tlItemHTML(it) {
     const color = getColorForTag(it.tag);
     const ct = contrastText(color);
@@ -1024,6 +1036,7 @@
       <div class="tl-body ${it.isFresh ? "fresh" : ""}" data-id="${it.id}" data-date="${it.date}">
         <div class="tl-row1">
           <span class="tl-title ${isDone(it) ? "done" : ""}">${esc(it.title)}</span>
+          ${prioBadge(it)}
           <span class="tag" style="background:${color};color:${ct}">${esc(it.tag)}</span>
           ${repeatBadge(it)}
         </div>
@@ -1318,6 +1331,18 @@
       const best = Object.entries(dh).sort((a, b) => b[1] - a[1])[0];
       if (best) parts.push(`高效时段 ${best[0]} 点`);
     }
+    // 计划偏差：有 doneAt 时比较实际完成时间与计划结束时间
+    const dev = [];
+    recent.forEach((i) => {
+      if (!isDone(i) || !i.doneAt) return;
+      const d = new Date(i.doneAt);
+      dev.push(d.getHours() * 60 + d.getMinutes() - parseHM(i.endTime));
+    });
+    if (dev.length >= 3) {
+      const avg = dev.reduce((s, v) => s + v, 0) / dev.length;
+      if (avg >= 15) parts.push(`平均比计划晚完成 ${Math.round(avg)} 分钟，排期建议留出缓冲`);
+      else if (avg <= -15) parts.push(`平均比计划提前 ${Math.round(-avg)} 分钟完成，节奏很稳`);
+    }
     profileCache = { at: Date.now(), text: parts.join("；") };
     return profileCache.text;
   }
@@ -1559,7 +1584,7 @@
   /* ============================================================
      日程页
      ============================================================ */
-  const schedUI = { open: false, sh: 9, sm: 0, dh: 1, dm: 0, tag: "其他", color: "#A1A1AA", custom: "", title: "", date: todayStr() };
+  const schedUI = { open: false, sh: 9, sm: 0, dh: 1, dm: 0, tag: "其他", color: "#A1A1AA", custom: "", title: "", date: todayStr(), priority: "中" };
 
   function renderSchedule() {
     const scoped = scopeItems(Store.state.schedule, scope);
@@ -1691,6 +1716,12 @@
         <span class="form-label">标签颜色</span>
         <div class="color-grid">${colorDots}</div>
       </div>
+      <div class="form-row">
+        <span class="form-label">优先级</span>
+        <div class="seg-group" id="prioSeg">
+          ${["高", "中", "低"].map((p) => `<span class="seg-btn ${schedUI.priority === p ? "on" : ""}" data-prio="${p}">${p}</span>`).join("")}
+        </div>
+      </div>
       <div class="flex gap1 mt2">
         <button class="btn ghost flex" style="flex:1" data-act="toggle-form">取消</button>
         <button class="btn flex" style="flex:1" data-act="confirm-add">添加日程</button>
@@ -1703,6 +1734,14 @@
     if (ti) ti.addEventListener("input", (e) => (schedUI.title = e.target.value));
     const ct = $("#customTag");
     if (ct) ct.addEventListener("input", (e) => (schedUI.tag = e.target.value.trim() || "其他"));
+    const pr = $("#prioSeg");
+    if (pr)
+      pr.querySelectorAll("[data-prio]").forEach((b) =>
+        b.addEventListener("click", () => {
+          schedUI.priority = b.dataset.prio;
+          pr.querySelectorAll("[data-prio]").forEach((x) => x.classList.toggle("on", x === b));
+        })
+      );
     const di = $("#dateInput");
     if (di)
       di.addEventListener("input", (e) => {
@@ -1752,6 +1791,7 @@
       date: schedUI.date || todayStr(),
       isCompleted: false,
       isFresh: true,
+      priority: schedUI.priority || "中",
     });
     const addedLabel = humanDateLabel(schedUI.date || todayStr());
     schedUI.title = "";
@@ -2142,7 +2182,7 @@
 2. 若用户要求的时段与已有日程重叠，请自动微调（前后移动 15-30 分钟）到不冲突的时段，并在 desc 注明调整原因；确实无法避开时保持原时段。
 3. 分类(tag)只能从 [学习,工作,运动,饮食,休息,社交,其他] 中选一个最贴切的。
 4. 只返回一个 JSON 对象，不要任何多余文字或解释。格式：
-{"tasks":[{"title":"日程名","startTime":"HH:MM","endTime":"HH:MM","tag":"学习","desc":"可选说明"}],"question":""}
+{"tasks":[{"title":"日程名","startTime":"HH:MM","endTime":"HH:MM","tag":"学习","desc":"可选说明","priority":"高|中|低(可选,按重要性判断)"}],"question":""}
 5. 若信息不足无法完整解析（如缺少时间或时长且无法合理推断），将 question 设为一句追问，tasks 为空数组。`;
     const userMsg = `我的安排：${text}`;
     const content = await callLLM(
@@ -2171,6 +2211,7 @@
           tag,
           tagColor: getColorForTag(tag),
           desc: t.desc ? String(t.desc).trim() : "",
+          priority: ["高", "中", "低"].includes(t.priority) ? t.priority : "中",
           date: planDate || todayStr(),
         };
       });
@@ -2290,6 +2331,7 @@
         date: t.date || todayStr(),
         isCompleted: false,
         isFresh: true,
+        priority: t.priority || "中",
       })
     );
     closeSheet();
@@ -2384,7 +2426,38 @@
     openSheet(
       `<div class="sheet-head"><div class="h">分类管理</div><button class="x" data-close>${svg("close")}</button></div>
        <div class="card-sub">内置分类不可删除，自定义分类可移除（不会影响已有日程的显示颜色）。</div>
-       <div class="mt3">${items}</div>`
+       <div class="mt3">${items}</div>
+       <div class="divider mt2"></div>
+       <div class="form-label mt2">新建自定义标签</div>
+       <div class="flex gap1 mt1">
+         <input class="input" id="catNewName" placeholder="自主命名，如「阅读」「冥想」" maxlength="8" />
+         <button class="btn" id="catNewAdd" style="flex:0 0 auto">${svg("plus")} 添加</button>
+       </div>
+       <div class="card-sub mt1">Agent 在对话舱里也能帮你新建 / 删除自定义标签。</div>`,
+      {
+        onOpen: (el) => {
+          el.querySelector("#catNewAdd").addEventListener("click", () => {
+            const name = el.querySelector("#catNewName").value.trim();
+            if (!name) {
+              toast("标签名称不能为空", "warn");
+              return;
+            }
+            if (allTags().some((t) => t.tag === name)) {
+              toast(`「${name}」已存在`, "warn");
+              return;
+            }
+            const color = TAG_PALETTE[(Object.keys(TAG_MAP).length + Store.state.customTags.length) % TAG_PALETTE.length];
+            Store.state.customTags.push({ tag: name, color });
+            Store.notify();
+            closeSheet();
+            openCatMan();
+            toast(`已创建标签「${name}」✨`, "ok");
+          });
+          el.querySelector("#catNewName").addEventListener("keydown", (e) => {
+            if (e.key === "Enter") el.querySelector("#catNewAdd").click();
+          });
+        },
+      }
     );
   }
 
@@ -2628,6 +2701,7 @@
       repeat: it.repeat || "none",
       remind: !!it.remind,
       remindOffset: it.remindOffset || 10,
+      priority: it.priority || "中",
     };
     const tagChips = tags
       .map(
@@ -2662,6 +2736,10 @@
          <div class="form-section">
            <div class="form-label">重复</div>
            <div class="seg repeat-seg">${repSeg("none", "不重复")}${repSeg("daily", "每天")}${repSeg("weekly", "每周")}</div>
+         </div>
+         <div class="form-section">
+           <div class="form-label">优先级</div>
+           <div class="prio-seg" id="ePrioSeg">${["高", "中", "低"].map((p) => `<span class="seg-btn ${draft.priority === p ? "on" : ""}" data-prio="${p}">${p}</span>`).join("")}</div>
          </div>
          <div class="form-section reminder-section">
            <div class="pref-row"><div><div class="pr-t">提醒</div><div class="pr-d" id="ePrd">${remindSub}</div></div>
@@ -2732,6 +2810,14 @@
               el.querySelectorAll(".seg-btn").forEach((x) => x.classList.toggle("on", x === b));
             })
           );
+          const ePrio = el.querySelector("#ePrioSeg");
+          if (ePrio)
+            ePrio.querySelectorAll(".seg-btn").forEach((b) =>
+              b.addEventListener("click", () => {
+                draft.priority = b.dataset.prio;
+                ePrio.querySelectorAll(".seg-btn").forEach((x) => x.classList.toggle("on", x === b));
+              })
+            );
           el.querySelector("#eConfirm").addEventListener("click", () => {
             const t = title.value.trim();
             if (!t) {
@@ -2757,6 +2843,7 @@
               repeat: draft.repeat,
               remind: draft.remind,
               remindOffset: draft.remindOffset,
+              priority: draft.priority || "中",
             });
             closeSheet();
             renderCurrent();
@@ -2782,10 +2869,22 @@
       const msg = `「${it.title}」将在 ${it.remindOffset} 分钟后开始（${it.startTime}）`;
       if ("Notification" in window && Notification.permission === "granted") {
         try {
-          new Notification("TimeAgent 提醒", { body: msg });
+          new Notification("TimeAgent 日程提醒", { body: msg });
         } catch (e) {}
       }
-      toast(msg, "ok");
+      // 提醒统一进对话舱：已打开直接插入 AI 消息；未打开 toast 带「查看」按钮进入后可见
+      const chatMsg = `（日程提醒）${msg}`;
+      if (document.getElementById("chatLayer")) {
+        proactiveChatPush(chatMsg);
+      } else {
+        toast(msg, "ok", {
+          label: "查看",
+          onClick: () => {
+            openChat();
+            setTimeout(() => proactiveChatPush(chatMsg), 200);
+          },
+        });
+      }
     }, diff);
   }
 
@@ -3104,7 +3203,7 @@
                 if (!data || !Array.isArray(data.schedule)) throw new Error("格式不正确");
                 Store.state.schedule = data.schedule
                   .filter((i) => i && i.title != null)
-                  .map((i) => Object.assign({ date: todayStr(), isCompleted: false, isFresh: false, desc: "", repeat: "none", remind: false, remindOffset: 10, doneDates: [] }, i));
+                  .map((i) => Object.assign({ date: todayStr(), isCompleted: false, isFresh: false, desc: "", repeat: "none", remind: false, remindOffset: 10, doneDates: [], priority: "中", doneAt: null, doneAtMap: null }, i));
                 if (Array.isArray(data.customTags)) Store.state.customTags = data.customTags;
                 if (data.prefs) Store.state.prefs = Object.assign({ defaultView: "day", freshHighlight: true }, data.prefs);
                 Store.notify();
@@ -3301,8 +3400,8 @@ ${scheduleContext(Store.state.prefs.chatMemory === "custom" ? { from: Store.stat
 【排期】{"tasks":[{"title":"日程名","startTime":"HH:MM","endTime":"HH:MM","tag":"学习","desc":"可选","date":"YYYY-MM-DD(可选,默认今天)"}]}【/排期】
 规则：时间用 24 小时制；tag 只能从 [学习,工作,运动,饮食,休息,社交,其他] 中选一个；结束时间未说则按常见时长合理推断；日期默认今天，用户说"明天/后天"要换算成具体日期；若新任务与上面已有日程时间重叠，请自动微调 15-30 分钟避开冲突。没有排期需求时不要输出【排期】标记。
 若用户要求删除/标记完成/改期已有日程，则在回复末尾单独输出一行：
-【操作】{"type":"delete|done|move","title":"日程名","date":"YYYY-MM-DD(可选,精确匹配某天)","startTime":"HH:MM(仅move需要)","repeatAll":true(可选,删除重复日程的整个系列)}【/操作】
-（delete=删除，done=打卡完成，move=改期需给新 startTime；按上面日程中的标题匹配，同名日程可用 date 精确到某天；重复日程删除默认删整个系列并告知用户；【操作】与【排期】不要同时输出，没有匹配的日程时也要输出该行并在正文说明）。`,
+【操作】{"type":"delete|done|move|tag-add|tag-del","title":"日程名或标签名","date":"YYYY-MM-DD(可选,精确匹配某天)","startTime":"HH:MM(仅move需要)"}【/操作】
+（delete=删除，done=打卡完成，move=改期需给新 startTime；tag-add=新建自定义标签（title 为标签名），tag-del=删除自定义标签（内置分类不能删）；按上面日程中的标题匹配，同名日程可用 date 精确到某天；重复日程删除默认删整个系列并告知用户；【操作】与【排期】不要同时输出，没有匹配的日程时也要输出该行并在正文说明）。`,
                 },
                 ...history,
                 { role: "user", content: text },
@@ -3329,6 +3428,7 @@ ${scheduleContext(Store.state.prefs.chatMemory === "custom" ? { from: Store.stat
                         tag,
                         tagColor: getColorForTag(tag),
                         desc: t.desc ? String(t.desc).trim() : "",
+                        priority: ["高", "中", "低"].includes(t.priority) ? t.priority : "中",
                         date: t.date || todayStr(),
                       };
                     });
@@ -3352,6 +3452,7 @@ ${scheduleContext(Store.state.prefs.chatMemory === "custom" ? { from: Store.stat
                   date: t.date,
                   isCompleted: false,
                   isFresh: true,
+                  priority: t.priority || "中",
                 })
               );
               tasks.forEach((t) =>
@@ -3406,6 +3507,21 @@ ${scheduleContext(Store.state.prefs.chatMemory === "custom" ? { from: Store.stat
                     Store.updateSchedule(item.id, { startTime: ns, endTime: ne });
                     results.push(`已把「${item.title}」改到 ${ns}~${ne}（保持原时长）`);
                   } else results.push(`没找到「${t}」或新时间无效`);
+                } else if (op.type === "tag-add") {
+                  // Agent 新建自定义标签（自主命名）
+                  const name = t;
+                  if (name && !allTags().some((x) => x.tag === name)) {
+                    const color = TAG_PALETTE[(Object.keys(TAG_MAP).length + Store.state.customTags.length) % TAG_PALETTE.length];
+                    Store.state.customTags.push({ tag: name, color });
+                    results.push(`已创建标签「${name}」`);
+                  } else results.push(`标签「${name}」已存在或名称无效`);
+                } else if (op.type === "tag-del") {
+                  const name = t;
+                  const def = !!TAG_MAP[name];
+                  if (!def && allTags().some((x) => x.tag === name)) {
+                    Store.state.customTags = Store.state.customTags.filter((x) => x.tag !== name);
+                    results.push(`已删除标签「${name}」（已有日程颜色不受影响）`);
+                  } else results.push(def ? `「${name}」是内置分类，不能删除` : `没找到分类「${name}」`);
                 }
               });
               const cleanOps = replyText.replace(/【操作】[\s\S]*?【\/操作】/g, "").trim();
@@ -3490,6 +3606,27 @@ ${scheduleContext(Store.state.prefs.chatMemory === "custom" ? { from: Store.stat
   // 离线对话助手：解析意图 → 增删改查 + 自然语言回复
   function localChatReply(text) {
     const lower = text;
+    // 标签操作（优先于日程删除/添加，避免"删除标签X"被日程删除截胡）
+    if (/新建(标签|分类)|创建(标签|分类)|加个(标签|分类)/.test(lower)) {
+      const name = lower.replace(/^(请|帮|我)?(新建|创建|加个)(标签|分类)/, "").replace(/[。.，,吗？?\s]/g, "").trim();
+      if (!name) return mkMsg("text", "告诉我标签名字，例如「新建标签 阅读」。");
+      if (allTags().some((t) => t.tag === name)) return mkMsg("text", `「${name}」已经存在啦。`);
+      const color = TAG_PALETTE[(Object.keys(TAG_MAP).length + Store.state.customTags.length) % TAG_PALETTE.length];
+      Store.state.customTags.push({ tag: name, color });
+      Store.notify();
+      return mkMsg("text", `已为你创建标签「${name}」✨ 之后添加日程时就能选它。`);
+    }
+    if (/删除(标签|分类)|去掉(标签|分类)/.test(lower)) {
+      const name = lower.replace(/^(请|帮|我)?(删除|去掉)(标签|分类)/, "").replace(/[。.，,吗？?\s]/g, "").trim();
+      if (!name) return mkMsg("text", "告诉我标签名字，例如「删除标签 阅读」。");
+      if (TAG_MAP[name]) return mkMsg("text", `「${name}」是内置分类，不能删除。`);
+      if (allTags().some((t) => t.tag === name)) {
+        Store.state.customTags = Store.state.customTags.filter((x) => x.tag !== name);
+        Store.notify();
+        return mkMsg("text", `已删除标签「${name}」（已有日程的颜色不受影响）。`);
+      }
+      return mkMsg("text", `没找到标签「${name}」。`);
+    }
     // 删除（支持日期限定 + 多候选确认）
     if (/删除|去掉|取消/.test(lower) && !/添加|新建|安排/.test(lower)) {
       let date = "";
@@ -3590,6 +3727,7 @@ ${scheduleContext(Store.state.prefs.chatMemory === "custom" ? { from: Store.stat
         return mkMsg("text", `已把「${item.title}」从 ${item.startTime}~${item.endTime} 改到 ${ns}~${ne}（保持原时长）。`);
       }
     }
+    // 新建 / 删除自定义标签（已在上方优先处理，此处为旧兜底占位已移除）
     // 添加
     if (/添加|安排|新建|加个|记一下|提醒/.test(lower) || /[点时]/.test(lower)) {
       const res = buildFreeDemoTasks(lower, undefined, chatDraft);
