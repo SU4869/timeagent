@@ -1680,6 +1680,10 @@
           <span class="src-badge off" id="homeAdviceBadge" title="当前内容来源">本地规则</span>
         </div>
         <button class="btn block mt2" data-act="optimize-today" title="按优先级和空闲时间，一键重排今天未完成的事项">${svg("sparkle")} AI 优化今日</button>
+        <div class="row2 mt2">
+          <button class="btn soft" data-act="gen-report" title="按当前查看范围（日/周/月）生成 AI 日报">${svg("sparkle")} 生成完整日报</button>
+          <button class="btn soft" data-act="weekly-review" title="回顾上周 AI 建议的执行情况，生成周复盘">${svg("chart")} 周复盘</button>
+        </div>
         ${agentActions.length ? `<div class="agent-actions mt2">${agentActions
           .map(
             (a) => `
@@ -1720,7 +1724,7 @@
     advice: "AI 对当前日程数据的优化建议（点击查看并生成日报）",
   };
   function statCell(icon, k, v, key) {
-    return `<div class="stat-cell clickable" role="button" tabindex="0" data-act="stat-detail" data-key="${key}" title="${STAT_TITLES[key] || ""}"><span class="ico">${svg(icon)}</span><span class="v">${v}</span><span class="k">${k}</span>${key === "advice" ? '<span class="go">' + svg("chevron") + "</span>" : ""}</div>`;
+    return `<div class="stat-cell clickable" role="button" tabindex="0" data-act="stat-detail" data-key="${key}" title="${STAT_TITLES[key] || ""}"><span class="ico">${svg(icon)}</span><span class="v">${v}</span><span class="k">${k}</span><span class="go">${svg("chevron")}</span></div>`;
   }
 
   function wireHome() {
@@ -2168,6 +2172,8 @@
       ${taskList}
       ${catCard}
       ${breakdown}
+      ${stats.totalHours ? `<div class="card"><div class="card-title">${svg("chart")} 专注趋势</div><div class="mt2">${renderTrendChart(14)}</div></div>` : ""}
+      ${stats.totalHours ? `<div class="card"><div class="card-title">${svg("target")} 分类占比</div><div class="mt2">${renderCatDonut(stats)}</div></div>` : ""}
       <div class="card"><div class="card-title">${svg("heart")} 习惯热力图</div>${renderHeatmapHTML()}<div class="card-sub mt1">颜色越深代表当天打卡越多；空格子是当天无安排。坚持看得见。</div></div>
     </div>`;
 
@@ -3091,6 +3097,25 @@
       : "上周还没有 AI 建议记录，从这周开始积累吧。";
     return `【周复盘 · 本地规则】\n\n本周完成 ${curRate}%，上周 ${prevRate}%。${trend}\n\n${advicePart}\n\n下周建议：给最重要的一件事先排进日程，再安排其它。`;
   }
+  // 周报自动定时推送：进入新的一周（且已有数据）时，自动生成周复盘存入 weekLog 并轻量提醒一次；同周重复打开不重复打扰
+  function autoWeeklyReview() {
+    const prefs = Store.state.prefs;
+    const cur = weekKeyOf(todayStr());
+    if (prefs.lastAutoWeek === cur) return false; // 本周已自动生成
+    if (!Store.state.schedule.length) return false; // 无数据不生成
+    const curStats = computeStatsFor(scopeItems(Store.state.schedule, { mode: "week", anchor: todayStr() }));
+    const prevStats = computeStatsFor(scopeItems(Store.state.schedule, { mode: "week", anchor: addDays(todayStr(), -7) }));
+    const curRate = curStats.totalCount ? Math.round((curStats.completedCount / curStats.totalCount) * 100) : 0;
+    const prevRate = prevStats.totalCount ? Math.round((prevStats.completedCount / prevStats.totalCount) * 100) : 0;
+    const lastEntries = (prefs.weekLog && prefs.weekLog[weekKeyOf(addDays(todayStr(), -7))]) || [];
+    const text = genOfflineWeekly(curRate, prevRate, lastEntries);
+    logWeeklyInsight("【系统自动周报】" + text.replace(/^【周复盘 · 本地规则】\s*/, ""));
+    prefs.lastAutoWeek = cur;
+    Store.save();
+    toast("📊 本周复盘已自动生成", "ok", { label: "查看", onClick: () => openWeeklyReview() });
+    // 注：自动生成仅存离线版；若配置了 API，用户在「周复盘」里打开时会自动升级为 AI 版（避免启动即消耗 token）
+    return true;
+  }
 
   /* ============================================================
      目标管理（我的页入口）：列表进度 + 新增 + 删除
@@ -3569,6 +3594,21 @@
   }
 
   // Web 端轻量提醒（回迁鸿蒙时用 reminderAgent 替换）：当天临近开始触发
+  // 系统通知开关：仅当用户选择「系统通知/两者」且已授权时才用 OS 通知；否则回退 App 内提醒
+  function sysNotifyAllowed() {
+    const mode = Store.state.prefs.notifyMode || "toast";
+    if (mode !== "system" && mode !== "both") return false;
+    return "Notification" in window && Notification.permission === "granted";
+  }
+  function testNotify() {
+    const mode = Store.state.prefs.notifyMode || "toast";
+    const body = "这是一条测试提醒 ✨ 若选择系统通知，请先在系统弹窗允许通知权限。";
+    if ((mode === "system" || mode === "both") && "Notification" in window) {
+      if (Notification.permission === "default") { try { Notification.requestPermission(); } catch (e) {} }
+      if (Notification.permission === "granted") { try { new Notification("TimeAgent 测试通知", { body }); } catch (e) {} }
+    }
+    toast("已发送测试提醒（当前方式：" + (mode === "toast" ? "仅 App 内" : mode === "system" ? "系统通知" : "两者") + "）", "ok");
+  }
   function scheduleReminder(it) {
     if (!it || !it.remind) return;
     if ((it.date || todayStr()) !== todayStr()) return;
@@ -3582,7 +3622,7 @@
     if (diff <= 0 || diff > 24 * 3600 * 1000) return;
     setTimeout(() => {
       const msg = `「${it.title}」将在 ${offset} 分钟后开始（${it.startTime}），记得准备一下～`;
-      if ("Notification" in window && Notification.permission === "granted") {
+      if (sysNotifyAllowed()) {
         try {
           new Notification("TimeAgent 日程提醒", { body: msg });
         } catch (e) {}
@@ -3813,7 +3853,7 @@
         },
       ]);
       // 系统通知：有权限时后台/锁屏也能看到（仅提醒一次，不重复）
-      if ("Notification" in window && Notification.permission === "granted") {
+      if (sysNotifyAllowed()) {
         try {
           new Notification("TimeAgent 主动提醒", { body: hit.text });
         } catch (e) {}
@@ -3854,6 +3894,8 @@
 
   function openPrefs() {
     const p = Store.state.prefs;
+    const nm = p.notifyMode || "toast";
+    const segN = (val, label) => `<span class="seg-btn ${nm === val ? "on" : ""}" data-act="set-pref" data-key="notifyMode" data-val="${val}">${label}</span>`;
     const seg = (key, val, label) =>
       `<span class="seg-btn ${p[key] === val ? "on" : ""}" data-act="set-pref" data-key="${key}" data-val="${val}">${label}</span>`;
     const toggleRow = (key, label, desc) =>
@@ -3868,6 +3910,13 @@
          </div>
          <div class="divider"></div>
          ${toggleRow("freshHighlight", "新日程高亮", "刚添加的日程带「新鲜」标记，便于快速定位")}
+         <div class="divider"></div>
+         <div class="card-sub">提醒方式</div>
+         <div class="seg mt2" style="display:inline-flex">
+           ${segN("toast", "仅 App 内")}${segN("system", "系统通知")}${segN("both", "两者")}
+         </div>
+         <div class="card-sub mt1" style="line-height:1.7">系统通知需浏览器/系统授权；安卓 WebView（TWA）内系统通知可能受限，会自动回退为 App 内提醒。推荐「两者」。</div>
+         <button class="btn block soft mt2" data-act="test-notify">${svg("bell")} 发送测试通知</button>
        </div>`
     );
   }
@@ -5225,6 +5274,9 @@ ${scheduleContext(Store.state.prefs.chatMemory === "custom" ? { from: Store.stat
       case "open-prefs":
         openPrefs();
         break;
+      case "test-notify":
+        testNotify();
+        break;
       case "open-help":
         openHelp();
         break;
@@ -5523,18 +5575,95 @@ ${scheduleContext(Store.state.prefs.chatMemory === "custom" ? { from: Store.stat
   }
   function openExport() {
     openSheet(
-      `<div class="sheet-head"><div class="h">导出数据</div><button class="x" data-close>${svg("close")}</button></div>
-       <div class="card-sub mt1" style="line-height:1.7">把全部日程导出，拿到 Excel 做周报分析，或导入系统日历（iOS 日历 / Google Calendar / Outlook）实现跨 App 提醒。</div>
+      `<div class="sheet-head"><div class="h">导出 / 导入数据</div><button class="x" data-close>${svg("close")}</button></div>
+       <div class="card-sub mt1" style="line-height:1.7">把全部日程导出，拿到 Excel 做周报分析，或导入系统日历（iOS 日历 / Google Calendar / Outlook）实现跨 App 提醒；也可导入别人分享的 .ics 文件。</div>
        <button class="btn block mt2" id="expCsv">${svg("doc")} 导出 CSV（Excel 友好）</button>
        <button class="btn block soft mt2" id="expIcs">${svg("calendar")} 导出 iCal(.ics)</button>
+       <button class="btn block soft mt2" id="impIcs">${svg("download")} 导入 iCal(.ics)</button>
+       <input type="file" id="impIcsFile" accept=".ics,text/calendar" hidden>
        <div class="bk-ok mt2" id="expDone" hidden></div>`,
       {
         onOpen: (el) => {
           el.querySelector("#expCsv").addEventListener("click", () => { downloadCSV(); const d = el.querySelector("#expDone"); d.hidden = false; d.textContent = "✅ CSV 已生成"; });
           el.querySelector("#expIcs").addEventListener("click", () => { downloadICS(); const d = el.querySelector("#expDone"); d.hidden = false; d.textContent = "✅ iCal 已生成（可导入系统日历）"; });
+          el.querySelector("#impIcs").addEventListener("click", () => el.querySelector("#impIcsFile").click());
+          el.querySelector("#impIcsFile").addEventListener("change", (e) => {
+            const f = e.target.files && e.target.files[0];
+            if (!f) return;
+            const r = new FileReader();
+            r.onload = () => {
+              const items = parseICS(r.result);
+              const res = importICSItems(items);
+              const d = el.querySelector("#expDone");
+              d.hidden = false;
+              d.textContent = res.added ? `✅ 已导入 ${res.added} 条${res.skipped ? "（跳过 " + res.skipped + " 条重复）" : ""}` : res.skipped ? "没有新日程，已跳过重复项" : "未识别到日程";
+            };
+            r.readAsText(f);
+          });
         },
       }
     );
+  }
+
+  /* ============================================================
+     iCal(.ics) 导入：解析 VCALENDAR/VEVENT，转成日程并去重批量添加
+     ============================================================ */
+  function parseICALDate(val) {
+    const v = (val || "").trim();
+    const m = v.match(/^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})/);
+    if (m) return { date: `${m[1]}-${m[2]}-${m[3]}`, time: `${m[4]}:${m[5]}` };
+    const d = v.match(/^(\d{4})(\d{2})(\d{2})/);
+    if (d) return { date: `${d[1]}-${d[2]}-${d[3]}`, time: null };
+    return null;
+  }
+  function parseICS(text) {
+    if (!text) return [];
+    const rawLines = text.split(/\r?\n/);
+    const lines = [];
+    rawLines.forEach((rl) => {
+      if (/^[ \t]/.test(rl) && lines.length) lines[lines.length - 1] += rl.replace(/^[ \t]/, ""); // 折行续接
+      else lines.push(rl);
+    });
+    const items = [];
+    let cur = null;
+    for (const line of lines) {
+      const up = line.toUpperCase();
+      if (up === "BEGIN:VEVENT") { cur = {}; continue; }
+      if (up === "END:VEVENT") { if (cur) items.push(cur); cur = null; continue; }
+      if (!cur) continue;
+      const idx = line.indexOf(":");
+      if (idx < 0) continue;
+      const name = line.slice(0, idx).toUpperCase().split(";")[0];
+      const val = line.slice(idx + 1);
+      if (name === "SUMMARY") cur.title = val.trim();
+      else if (name === "DTSTART") { const p = parseICALDate(val); if (p) { cur.date = p.date; cur.startTime = p.time; } }
+      else if (name === "DTEND") { const p = parseICALDate(val); if (p) cur.endTime = p.time; }
+      else if (name === "CATEGORIES") cur.tag = val.trim();
+      else if (name === "UID") cur.uid = val.trim();
+    }
+    return items
+      .filter((c) => c.title && c.date)
+      .map((c) => {
+        const start = c.startTime || "09:00";
+        const [h, m] = start.split(":").map(Number);
+        const t = h * 60 + m + 60;
+        const end = c.endTime || `${String(Math.floor(t / 60) % 24).padStart(2, "0")}:${String(t % 60).padStart(2, "0")}`;
+        return { title: c.title, date: c.date, startTime: start, endTime: end, tag: c.tag || "其他" };
+      });
+  }
+  function importICSItems(items) {
+    let added = 0, skipped = 0;
+    const ids = [];
+    (items || []).forEach((it) => {
+      const cand = { id: uid(), title: it.title, date: it.date, startTime: it.startTime, endTime: it.endTime, tag: it.tag || "其他", priority: "中", remind: false, remindOffset: 10 };
+      const dup = Store.state.schedule.some((s) => s.date === cand.date && s.title === cand.title && s.startTime === cand.startTime);
+      if (dup) { skipped++; return; }
+      Store.addSchedule(cand);
+      ids.push(cand.id);
+      added++;
+    });
+    if (added) { Store.save(); renderCurrent(); }
+    return { added, skipped, ids };
   }
 
   /* ============================================================
@@ -5573,6 +5702,63 @@ ${scheduleContext(Store.state.prefs.chatMemory === "custom" ? { from: Store.stat
         <div class="hm-legend"><span>少</span>${[0, 1, 2, 3, 4].map((l) => `<span class="hm-cell lv${l}"></span>`).join("")}<span>多</span></div>
         <div class="hm-stat">最长连续记录 <b>${maxStreak}</b> 天</div>
       </div>`;
+  }
+
+  /* ============================================================
+     统计可视化：专注趋势折线图 + 分类占比环图（纯 SVG，无外部库）
+     ============================================================ */
+  function trendSeries(days = 14) {
+    const map = {};
+    Store.state.schedule.forEach((i) => {
+      const d = i.date || todayStr();
+      if (!map[d]) map[d] = 0;
+      if (isDone(i)) map[d] += parseHM(i.endTime) - parseHM(i.startTime);
+    });
+    const arr = [];
+    for (let i = days - 1; i >= 0; i--) {
+      const d = addDays(todayStr(), -i);
+      arr.push({ date: d, hours: Math.max(0, map[d] || 0) });
+    }
+    return arr;
+  }
+  function renderTrendChart(days = 14) {
+    const s = trendSeries(days);
+    const max = Math.max(1, ...s.map((x) => x.hours));
+    const W = 280, H = 90, pad = 10;
+    const stepX = s.length > 1 ? (W - pad * 2) / (s.length - 1) : 0;
+    const pts = s.map((x, i) => {
+      const xv = pad + i * stepX;
+      const yv = H - pad - (x.hours / max) * (H - pad * 2);
+      return `${xv.toFixed(1)},${yv.toFixed(1)}`;
+    }).join(" ");
+    const area = `${pad},${H - pad} ${pts} ${W - pad},${H - pad}`;
+    const bars = s.map((x, i) => {
+      const xv = pad + i * stepX;
+      const yv = H - pad - (x.hours / max) * (H - pad * 2);
+      const bw = Math.min(6, stepX * 0.5 || 4);
+      return `<rect x="${(xv - bw / 2).toFixed(1)}" y="${yv.toFixed(1)}" width="${bw.toFixed(1)}" height="${(H - pad - yv).toFixed(1)}" rx="1.5" fill="var(--primary)" opacity="0.22"/>`;
+    }).join("");
+    return `<div class="trend-chart"><svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" width="100%" height="90">
+        <polygon points="${area}" fill="var(--primary-soft)" opacity="0.55"/>
+        ${bars}
+        <polyline points="${pts}" fill="none" stroke="var(--primary-strong)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+      </svg><div class="tc-cap">近 ${days} 天每日专注时长（小时）</div></div>`;
+  }
+  function renderCatDonut(stats) {
+    const dist = catDistOf(stats).filter((d) => d.hours > 0);
+    if (!dist.length) return "";
+    const total = dist.reduce((a, d) => a + d.hours, 0) || 1;
+    const R = 42, C = 2 * Math.PI * R;
+    let off = 0;
+    const segs = dist.map((d) => {
+      const frac = d.hours / total;
+      const len = frac * C;
+      const seg = `<circle cx="50" cy="50" r="${R}" fill="none" stroke="${d.color}" stroke-width="14" stroke-dasharray="${len.toFixed(2)} ${(C - len).toFixed(2)}" stroke-dashoffset="${(-off).toFixed(2)}" transform="rotate(-90 50 50)"/>`;
+      off += len;
+      return seg;
+    }).join("");
+    const legend = dist.map((d) => `<span class="dn-leg"><i style="background:${d.color}"></i>${esc(d.cat)} ${d.percent}%</span>`).join("");
+    return `<div class="cat-donut"><svg viewBox="0 0 100 100" width="120" height="120">${segs}<text x="50" y="47" text-anchor="middle" class="dn-total">${stats.totalHours.toFixed(1)}</text><text x="50" y="62" text-anchor="middle" class="dn-unit">小时</text></svg><div class="dn-legs">${legend}</div></div>`;
   }
 
   /* ============================================================
@@ -5618,6 +5804,8 @@ ${scheduleContext(Store.state.prefs.chatMemory === "custom" ? { from: Store.stat
       return false;
     };
     initReminders();
+    // 周报自动定时推送：进入新的一周（有数据）时自动生成周复盘并轻量提醒（同周不重复）
+    autoWeeklyReview();
     // AI 主动聊天：启动 15s 后首次检查，之后每 20 分钟一次；回到前台时也检查（暴露给测试/调试）
     window.__taProactive = proactiveFire;
     // 主动消息反馈测试钩子
@@ -5661,8 +5849,11 @@ ${scheduleContext(Store.state.prefs.chatMemory === "custom" ? { from: Store.stat
     window.__taOnboard = { openOnboarding, hasOnboarded, seedDemoData };
     window.__taTpl = { copyDayToDay, saveTemplate, applyTemplate, listTemplates, openTemplates, dayItemsOf };
     window.__taExport = { toCSV, toICS, downloadCSV, downloadICS, openExport };
+    window.__taImport = { parseICS, importICSItems };
     window.__taHeat = { heatmapData, renderHeatmapHTML };
     window.__taRemind = { backupRemindDue };
+    window.__taWeekly = { autoWeeklyReview, clearAuto: () => { Store.state.prefs.lastAutoWeek = null; Store.save(); }, weekKey: () => weekKeyOf(todayStr()) };
+    window.__taNotify = { sysNotifyAllowed, testNotify };
     // 新手引导：全新用户（无标记 + 无数据）首次启动弹出；已有数据的不打扰（不影响老用户与测试）
     if (!hasOnboarded() && Store.state.schedule.length === 0) setTimeout(openOnboarding, 350);
   }

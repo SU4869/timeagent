@@ -889,6 +889,8 @@ ul { list-style: none; }
 .chip-btn svg { width: 15px; height: 15px; stroke: currentColor; fill: none; stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; color: var(--primary); }
 .chip-btn:hover { border-color: var(--primary); background: var(--primary-soft); }
 .chip-btn:active { transform: scale(.97); }
+.row2 { display: flex; gap: 8px; }
+.row2 .btn { flex: 1; }
 
 /* 新手引导 */
 .ob-body { display: flex; flex-direction: column; gap: 12px; }
@@ -912,4 +914,16 @@ ul { list-style: none; }
 .hm-legend { display: flex; align-items: center; gap: 4px; font-size: 11px; color: var(--t3); }
 .hm-legend .hm-cell { width: 11px; height: 11px; }
 .hm-stat { font-size: 12.5px; color: var(--t2); }
+
+/* 统计可视化：专注趋势折线 + 分类占比环图 */
+.trend-chart { width: 100%; }
+.trend-chart svg { display: block; width: 100%; height: 90px; }
+.tc-cap { font-size: 11.5px; color: var(--t3); text-align: center; margin-top: 4px; }
+.cat-donut { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+.cat-donut svg { flex: 0 0 auto; }
+.cat-donut .dn-total { font-size: 15px; font-weight: 700; fill: var(--t1); }
+.cat-donut .dn-unit { font-size: 8px; fill: var(--t3); }
+.dn-legs { display: flex; flex-direction: column; gap: 5px; flex: 1; min-width: 120px; }
+.dn-leg { display: flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--t2); }
+.dn-leg i { width: 10px; height: 10px; border-radius: 3px; flex: 0 0 auto; }
 .hm-stat b { color: var(--primary-strong); font-size: 15px; }
