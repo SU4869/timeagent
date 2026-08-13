@@ -4155,14 +4155,155 @@ ${scheduleContext(Store.state.prefs.chatMemory === "custom" ? { from: Store.stat
 若用户要求删除/标记完成/改期已有日程，则在回复末尾单独输出一行：
 【操作】{"type":"delete|done|move|rename|retag|prio|classify|tag-add|tag-del","title":"日程名或标签名","newTitle":"新名称(仅rename)","tag":"新标签(仅retag)","priority":"高|中|低(仅prio)","cat":"学习|工作|运动|饮食|休息|社交|其他(仅classify)","date":"YYYY-MM-DD(可选,精确匹配某天)","startTime":"HH:MM(仅move需要)"}【/操作】
 （delete=删除，done=打卡完成，move=改期需给新 startTime（可加 date 一起改日期），rename=改名称需给 newTitle，retag=改标签需给 tag，prio=改优先级需给 priority，classify=把自定义标签归类到正经大类需给 cat（内置大类无需归类）；tag-add=新建自定义标签（title 为标签名），tag-del=删除自定义标签（内置分类不能删）；按上面日程中的标题匹配，同名日程可用 date 精确到某天；重复日程删除默认删整个系列并告知用户；【操作】与【排期】不要同时输出，没有匹配的日程时也要输出该行并在正文说明）。
-【硬性要求】只要用户要求对已有日程做任何修改（改名/改标签/改优先级/删除/打卡/改期/归类），你就必须输出【操作】标记行，绝对不能只在正文里口头说"已改好/已删除/已完成"而不输出标记——没有标记前端就不会真正执行，等于没改。正文可以先说一句确认，但标记必须带。`,
+【硬性要求】只要用户要求对已有日程做任何修改（改名/改标签/改优先级/删除/打卡/改期/归类），你就必须输出【操作】标记行，绝对不能只在正文里口头说"已改好/已删除/已完成"而不输出标记——没有标记前端就不会真正执行，等于没改。正文可以先说一句确认，但标记必须带。
+【追问原则】当用户的指令信息不足、指代不明或可能产生误操作时，先追问澄清再执行，不要猜：①删除/改名/改标签等操作找不到明确对应的日程，列出相近选项让用户选；②用户没说清楚改到什么值（如只说"改一下"没说改成什么）；③多个同名日程需要确认具体哪一个（用日期区分）；④操作有风险（删除/整系列删除）时先确认。追问要具体、给示例，不要空泛地重复问题。只有完全明确时才直接执行。`,
                 },
                 ...history,
                 { role: "user", content: text },
               ],
               { temperature: 0.5, maxTokens: 1200, timeoutMs: 60000 }
             );
-            // 解析 AI 排期数据：带【排期】标记则直接落库
+            // 解析 AI 操作数据（删除/打卡/改期/改名/改标签等）：优先于【排期】处理，
+            // 避免模型同时输出两者时操作被排期分支吞掉（改名失败却弹"添加成功"的根因）
+            const ops = [];
+            const am = replyText.match(/【操作】([\s\S]*?)【\/操作】/);
+            if (am) {
+              try {
+                const j = JSON.parse(am[1].trim());
+                if (Array.isArray(j)) ops.push(...j);
+                else if (j && j.type) ops.push(j);
+              } catch (e) {}
+            }
+            if (ops.length) {
+              const results = [];
+              const notFound = [];
+              const allTitles = Store.state.schedule.map((i) => i.title).filter((v, k, a) => a.indexOf(v) === k);
+              ops.forEach((op) => {
+                const t = op && op.title ? String(op.title).trim() : "";
+                if (!t) return;
+                const date = op && op.date ? String(op.date).trim() : "";
+                const matches = Store.state.schedule.filter((i) => i.title.includes(t) || t.includes(i.title));
+                // 同名多实例：优先匹配指定日期，否则取第一个
+                const item = (date ? matches.find((i) => (i.date || "") === date) : null) || matches[0];
+                if (op.type === "delete") {
+                  if (item) {
+                    const isRepeat = item.repeat && item.repeat !== "none";
+                    Store.removeSchedule(item.id);
+                    results.push(isRepeat ? `已删除「${item.title}」（重复日程，整个系列一并移除）` : `已删除「${item.title}」`);
+                    undoableToast(`已删除「${item.title}」${isRepeat ? "（重复系列）" : ""}`, "warn", { kind: "remove", item: JSON.parse(JSON.stringify(item)) });
+                  } else {
+                    results.push(`没找到「${t}」`);
+                    notFound.push(t);
+                  }
+                } else if (op.type === "done") {
+                  if (item) {
+                    const before = JSON.parse(JSON.stringify(item));
+                    Store.toggleSchedule(item.id, date || item.date);
+                    results.push(`已把「${item.title}」标记为${isDone(item) ? "未完成" : "已完成"}${date ? `（${date}）` : ""}`);
+                    undoableToast(`已把「${item.title}」标记为${isDone(item) ? "未完成" : "已完成"}`, "ok", {
+                      kind: "patch",
+                      id: item.id,
+                      before: { isCompleted: before.isCompleted, doneAt: before.doneAt, doneAtMap: before.doneAtMap, doneDates: before.doneDates },
+                    });
+                  } else {
+                    results.push(`没找到「${t}」`);
+                    notFound.push(t);
+                  }
+                } else if (op.type === "move") {
+                  const ns = normTime(op.startTime);
+                  if (item && ns) {
+                    const durMin = Math.max(0, Math.round((parseHM(item.endTime) - parseHM(item.startTime)) * 60));
+                    const [h, m] = ns.split(":").map(Number);
+                    const endMin = h * 60 + m + durMin;
+                    const ne = `${pad(Math.floor(endMin / 60) % 24)}:${pad(endMin % 60)}`;
+                    const patch = { startTime: ns, endTime: ne };
+                    // 支持一并改日期（仅非重复日程）
+                    if (date && (!item.repeat || item.repeat === "none")) patch.date = date;
+                    const before = JSON.parse(JSON.stringify(item));
+                    Store.updateSchedule(item.id, patch);
+                    results.push(`已把「${item.title}」改到 ${ns}~${ne}（保持原时长）${date ? `，日期改为 ${date}` : ""}`);
+                    undoableToast(`已把「${item.title}」改到 ${ns}~${ne}`, "ok", {
+                      kind: "patch",
+                      id: item.id,
+                      before: { startTime: before.startTime, endTime: before.endTime, date: before.date },
+                    });
+                  } else {
+                    results.push(`没找到「${t}」或新时间无效`);
+                    notFound.push(t);
+                  }
+                } else if (op.type === "rename") {
+                  const nt = op.newTitle ? String(op.newTitle).trim().slice(0, 30) : "";
+                  if (item && nt) {
+                    Store.updateSchedule(item.id, { title: nt });
+                    results.push(`已把「${item.title}」改名为「${nt}」`);
+                  } else {
+                    results.push(nt ? `改名失败：没找到「${t}」` : "改名失败：缺少新名称 newTitle");
+                    notFound.push(t);
+                  }
+                } else if (op.type === "retag") {
+                  const nt = op.tag ? String(op.tag).trim().slice(0, 8) : "";
+                  if (item && nt) {
+                    Store.updateSchedule(item.id, { tag: nt, tagColor: getColorForTag(nt) });
+                    results.push(`已把「${item.title}」的标签改为「${nt}」`);
+                  } else {
+                    results.push(nt ? `改标签失败：没找到「${t}」` : "改标签失败：缺少新标签 tag");
+                    notFound.push(t);
+                  }
+                } else if (op.type === "prio") {
+                  const np = ["高", "中", "低"].includes(op.priority) ? op.priority : "";
+                  if (item && np) {
+                    Store.updateSchedule(item.id, { priority: np });
+                    results.push(`已把「${item.title}」的优先级设为「${np}」`);
+                  } else {
+                    results.push(`改优先级失败：没找到「${t}」或优先级无效`);
+                    notFound.push(t);
+                  }
+                } else if (op.type === "tag-add") {
+                  // Agent 新建自定义标签（自主命名）
+                  const name = t;
+                  if (name && !allTags().some((x) => x.tag === name)) {
+                    const color = TAG_PALETTE[(Object.keys(TAG_MAP).length + Store.state.customTags.length) % TAG_PALETTE.length];
+                    Store.state.customTags.push({ tag: name, color });
+                    results.push(`已创建标签「${name}」`);
+                  } else results.push(`标签「${name}」已存在或名称无效`);
+                } else if (op.type === "tag-del") {
+                  const name = t;
+                  const def = !!TAG_MAP[name];
+                  if (!def && allTags().some((x) => x.tag === name)) {
+                    Store.state.customTags = Store.state.customTags.filter((x) => x.tag !== name);
+                    results.push(`已删除标签「${name}」（已有日程颜色不受影响）`);
+                  } else results.push(def ? `「${name}」是内置分类，不能删除` : `没找到分类「${name}」`);
+                } else if (op.type === "classify") {
+                  // Agent 归类：把自定义/趣味标签归到正经大类（统计按大类汇总）
+                  const name = t;
+                  const cat = CATS.includes(op.cat) ? op.cat : "";
+                  if (TAG_MAP[name]) {
+                    results.push(`「${name}」本身就是正经大类，无需归类。`);
+                  } else {
+                    const ct = Store.state.customTags.find((x) => x.tag === name);
+                    if (ct && cat) {
+                      ct.cat = cat;
+                      results.push(`已把标签「${name}」归类到大类「${cat}」，相关日程将按${cat}统计`);
+                    } else results.push(`没找到自定义标签「${name}」或大类无效（可选：${CATS.join("、")}）`);
+                  }
+                }
+              });
+              const cleanOps = replyText.replace(/【操作】[\s\S]*?【\/操作】/g, "").trim();
+              if (cleanOps) pushMsg(mkMsg("text", cleanOps, null, "ai"));
+              pushMsg(mkMsg("text", results.join("\n"), null, "ai"));
+              // 有匹配失败的指令：列出相近日程候选，引导用户确认（避免"说没找到就完事"）
+              if (notFound.length) {
+                const cands = allTitles.filter((ti) => notFound.some((nf) => ti.includes(nf) || nf.includes(ti)));
+                const pool = cands.length ? cands : allTitles;
+                pushMsg(mkMsg("text", `没找到「${notFound.join("、")}」对应的日程，我这边有的是：${pool.slice(0, 8).map((x) => `「${x}」`).join("、")}${pool.length > 8 ? " 等" : ""}。告诉我具体哪一个？`, null, "offline"));
+              }
+              // 有失败项时不弹"成功"误导（如"改名失败：没找到"，仍显示成功会让人以为改了）
+              const hasFail = results.some((r) => /失败|没找到|不能删除|无效/.test(r));
+              toast(hasFail ? "部分指令未执行，详情见上方回复 ⚠️" : "已按你的指令更新日程 ✅", hasFail ? "warn" : "ok");
+              renderCurrent();
+              return;
+            }
+            // 无【操作】标记：尝试解析【排期】添加日程
             let tasks = null;
             const pm = replyText.match(/【排期】([\s\S]*?)【\/排期】/);
             if (pm) {
@@ -4232,117 +4373,6 @@ ${scheduleContext(Store.state.prefs.chatMemory === "custom" ? { from: Store.stat
               } else {
                 toast(`这些日程之前已经添加过了，无需重复 ✌️${skipped ? `（跳过 ${skipped} 项）` : ""}`, "warn");
               }
-              return;
-            }
-            // 解析 AI 操作数据：删除 / 打卡 / 改期（在线 agent 直接操作真实日程）
-            const ops = [];
-            const am = replyText.match(/【操作】([\s\S]*?)【\/操作】/);
-            if (am) {
-              try {
-                const j = JSON.parse(am[1].trim());
-                if (Array.isArray(j)) ops.push(...j);
-                else if (j && j.type) ops.push(j);
-              } catch (e) {}
-            }
-            if (ops.length) {
-              const results = [];
-              ops.forEach((op) => {
-                const t = op && op.title ? String(op.title).trim() : "";
-                if (!t) return;
-                const date = op && op.date ? String(op.date).trim() : "";
-                const matches = Store.state.schedule.filter((i) => i.title.includes(t) || t.includes(i.title));
-                // 同名多实例：优先匹配指定日期，否则取第一个
-                const item = (date ? matches.find((i) => (i.date || "") === date) : null) || matches[0];
-                if (op.type === "delete") {
-                  if (item) {
-                    const isRepeat = item.repeat && item.repeat !== "none";
-                    Store.removeSchedule(item.id);
-                    results.push(isRepeat ? `已删除「${item.title}」（重复日程，整个系列一并移除）` : `已删除「${item.title}」`);
-                    undoableToast(`已删除「${item.title}」${isRepeat ? "（重复系列）" : ""}`, "warn", { kind: "remove", item: JSON.parse(JSON.stringify(item)) });
-                  } else results.push(`没找到「${t}」`);
-                } else if (op.type === "done") {
-                  if (item) {
-                    const before = JSON.parse(JSON.stringify(item));
-                    Store.toggleSchedule(item.id, date || item.date);
-                    results.push(`已把「${item.title}」标记为${isDone(item) ? "未完成" : "已完成"}${date ? `（${date}）` : ""}`);
-                    undoableToast(`已把「${item.title}」标记为${isDone(item) ? "未完成" : "已完成"}`, "ok", {
-                      kind: "patch",
-                      id: item.id,
-                      before: { isCompleted: before.isCompleted, doneAt: before.doneAt, doneAtMap: before.doneAtMap, doneDates: before.doneDates },
-                    });
-                  } else results.push(`没找到「${t}」`);
-                } else if (op.type === "move") {
-                  const ns = normTime(op.startTime);
-                  if (item && ns) {
-                    const durMin = Math.max(0, Math.round((parseHM(item.endTime) - parseHM(item.startTime)) * 60));
-                    const [h, m] = ns.split(":").map(Number);
-                    const endMin = h * 60 + m + durMin;
-                    const ne = `${pad(Math.floor(endMin / 60) % 24)}:${pad(endMin % 60)}`;
-                    const patch = { startTime: ns, endTime: ne };
-                    // 支持一并改日期（仅非重复日程）
-                    if (date && (!item.repeat || item.repeat === "none")) patch.date = date;
-                    const before = JSON.parse(JSON.stringify(item));
-                    Store.updateSchedule(item.id, patch);
-                    results.push(`已把「${item.title}」改到 ${ns}~${ne}（保持原时长）${date ? `，日期改为 ${date}` : ""}`);
-                    undoableToast(`已把「${item.title}」改到 ${ns}~${ne}`, "ok", {
-                      kind: "patch",
-                      id: item.id,
-                      before: { startTime: before.startTime, endTime: before.endTime, date: before.date },
-                    });
-                  } else results.push(`没找到「${t}」或新时间无效`);
-                } else if (op.type === "rename") {
-                  const nt = op.newTitle ? String(op.newTitle).trim().slice(0, 30) : "";
-                  if (item && nt) {
-                    Store.updateSchedule(item.id, { title: nt });
-                    results.push(`已把「${item.title}」改名为「${nt}」`);
-                  } else results.push(`改名失败：没找到「${t}」或新名称无效`);
-                } else if (op.type === "retag") {
-                  const nt = op.tag ? String(op.tag).trim().slice(0, 8) : "";
-                  if (item && nt) {
-                    Store.updateSchedule(item.id, { tag: nt, tagColor: getColorForTag(nt) });
-                    results.push(`已把「${item.title}」的标签改为「${nt}」`);
-                  } else results.push(`改标签失败：没找到「${t}」或标签无效`);
-                } else if (op.type === "prio") {
-                  const np = ["高", "中", "低"].includes(op.priority) ? op.priority : "";
-                  if (item && np) {
-                    Store.updateSchedule(item.id, { priority: np });
-                    results.push(`已把「${item.title}」的优先级设为「${np}」`);
-                  } else results.push(`改优先级失败：没找到「${t}」或优先级无效`);
-                } else if (op.type === "tag-add") {
-                  // Agent 新建自定义标签（自主命名）
-                  const name = t;
-                  if (name && !allTags().some((x) => x.tag === name)) {
-                    const color = TAG_PALETTE[(Object.keys(TAG_MAP).length + Store.state.customTags.length) % TAG_PALETTE.length];
-                    Store.state.customTags.push({ tag: name, color });
-                    results.push(`已创建标签「${name}」`);
-                  } else results.push(`标签「${name}」已存在或名称无效`);
-                } else if (op.type === "tag-del") {
-                  const name = t;
-                  const def = !!TAG_MAP[name];
-                  if (!def && allTags().some((x) => x.tag === name)) {
-                    Store.state.customTags = Store.state.customTags.filter((x) => x.tag !== name);
-                    results.push(`已删除标签「${name}」（已有日程颜色不受影响）`);
-                  } else results.push(def ? `「${name}」是内置分类，不能删除` : `没找到分类「${name}」`);
-                } else if (op.type === "classify") {
-                  // Agent 归类：把自定义/趣味标签归到正经大类（统计按大类汇总）
-                  const name = t;
-                  const cat = CATS.includes(op.cat) ? op.cat : "";
-                  if (TAG_MAP[name]) {
-                    results.push(`「${name}」本身就是正经大类，无需归类。`);
-                  } else {
-                    const ct = Store.state.customTags.find((x) => x.tag === name);
-                    if (ct && cat) {
-                      ct.cat = cat;
-                      results.push(`已把标签「${name}」归类到大类「${cat}」，相关日程将按${cat}统计`);
-                    } else results.push(`没找到自定义标签「${name}」或大类无效（可选：${CATS.join("、")}）`);
-                  }
-                }
-              });
-              const cleanOps = replyText.replace(/【操作】[\s\S]*?【\/操作】/g, "").trim();
-              if (cleanOps) pushMsg(mkMsg("text", cleanOps, null, "ai"));
-              pushMsg(mkMsg("text", results.join("\n"), null, "ai"));
-              toast("已按你的指令更新日程 ✅", "ok");
-              renderCurrent();
               return;
             }
             // 无【操作】标记：检查正文是否声称已修改/已删除/已完成（模型幻觉时前端未执行，需明确告知用户）
