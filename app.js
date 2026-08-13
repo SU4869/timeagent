@@ -888,9 +888,12 @@
       const clean = text.replace(/\s*\n+\s*/g, " ").trim().slice(0, 200);
       insightCache.set(key, { text: clean, at: Date.now() });
       if (insightCache.size > 12) insightCache.clear(); // 防止跨天累积无限增长
+      logWeeklyInsight(clean);
       return { text: clean, via: "ai" };
     } catch (e) {
-      return { text: buildAdvice(stats, scope), via: "offline" };
+      const fb = buildAdvice(stats, scope);
+      logWeeklyInsight(fb);
+      return { text: fb, via: "offline" };
     }
   }
 
@@ -927,12 +930,42 @@
   }
 
   const overlay = $("#overlay");
+  /* ---------- 功能按钮提示系统：给 data-act 元素补 title 说明（已有 title 不覆盖） ---------- */
+  const ACT_HINTS = {
+    "optimize-today": "按优先级和空闲时间，一键重排今天未完成的事项",
+    "open-planner": "用一句话让 AI 帮你安排日程",
+    "open-chat": "打开 AI 时间管家，可对话、调教语气、操作日程",
+    "weekly-review": "回顾上周 AI 建议的执行情况，生成周复盘",
+    "gen-report": "生成当前范围的 AI 日报",
+    "toggle-form": "展开 / 收起添加日程表单",
+    "save-api": "保存 API 配置（填 Key 即启用在线 AI）",
+    "open-persona": "调教 AI 的语气风格，可命名备份多套人格",
+    "open-catman": "管理分类标签：自定义命名、归入正经大类",
+    "del-cat": "删除自定义分类（内置分类不可删）",
+    "open-history": "查看历史日程记录",
+    "open-prefs": "AI 偏好设置",
+    "open-backup": "备份 / 恢复本地数据",
+    "open-privacy": "查看隐私政策",
+    "open-terms": "查看用户协议",
+    "open-help": "帮助与反馈",
+    "stat-detail": "点击查看该项详细数据",
+    "open-issues": "查看冲突 / 过载预警详情",
+  };
+  function applyActHints(root) {
+    (root || document).querySelectorAll("[data-act]").forEach((el) => {
+      if (el.hasAttribute("title")) return;
+      const h = ACT_HINTS[el.dataset.act];
+      if (h) el.title = h;
+    });
+  }
+
   function openSheet(html, opts = {}) {
     overlay.innerHTML = `<div class="sheet" role="dialog" aria-modal="true">${html}</div>`;
     overlay.classList.add("show");
     overlay.setAttribute("aria-hidden", "false");
     overlay.querySelectorAll("[data-close]").forEach((btn) => btn.addEventListener("click", closeSheet));
     if (opts.onOpen) opts.onOpen(overlay.querySelector(".sheet"));
+    applyActHints(overlay.querySelector(".sheet"));
     return overlay.querySelector(".sheet");
   }
   function closeSheet() {
@@ -1310,6 +1343,59 @@
   }
 
   /* ============================================================
+     一键"AI 优化今日"（本地规则重排，零 token）
+     - 今天未完成事项按优先级(高→中→低)排序，从当前时间起放入空闲窗口（保留原时长）
+     - 放不下的标记 drop（建议顺延）
+     ============================================================ */
+  const prioRank = (it) => (it.priority === "高" ? 3 : it.priority === "低" ? 1 : 2);
+  const fmtHM = (m) => `${pad(Math.floor(m / 60))}:${pad(m % 60)}`;
+  function replanToday() {
+    const t = todayStr();
+    const nowMin = new Date().getHours() * 60 + new Date().getMinutes();
+    const today = scopeItems(Store.state.schedule, { mode: "day", anchor: t });
+    const undone = today.filter((i) => !isDone(i)).sort((a, b) => prioRank(b) - prioRank(a) || toMin(a.startTime) - toMin(b.startTime));
+    if (!undone.length) return { plan: [], msg: "今天没有未完成的事项啦，都搞定了～" };
+    const busy = today
+      .filter((i) => isDone(i))
+      .map((i) => [toMin(i.startTime), toMin(i.endTime)])
+      .sort((a, b) => a[0] - b[0]);
+    const plan = [];
+    let cursor = nowMin;
+    undone.forEach((it) => {
+      const dur = Math.max(30, toMin(it.endTime) - toMin(it.startTime));
+      let s = cursor;
+      let guard = 0;
+      while (guard++ < 200) {
+        const e = s + dur;
+        const clash = busy.some(([bs, be]) => s < be && e > bs);
+        if (!clash && e <= 24 * 60) break;
+        s += 15;
+      }
+      if (s + dur > 24 * 60) {
+        plan.push({ id: it.id, title: it.title, start: "--:--", end: "--:--", drop: true });
+        return;
+      }
+      busy.push([s, s + dur]);
+      busy.sort((a, b) => a[0] - b[0]);
+      plan.push({ id: it.id, title: it.title, start: fmtHM(s), end: fmtHM(s + dur), drop: false });
+      cursor = s + dur;
+    });
+    return { plan, msg: "" };
+  }
+  function applyReplan(plan) {
+    let applied = 0;
+    plan.forEach((p) => {
+      if (p.drop) return;
+      const it = Store.state.schedule.find((x) => x.id === p.id);
+      if (it) {
+        Store.updateSchedule(p.id, { startTime: p.start, endTime: p.end });
+        applied++;
+      }
+    });
+    return applied;
+  }
+
+  /* ============================================================
      用户画像（长期记忆，本地规则零 token）
      - 从近 30 天日程提取：常安排时段 / 完成率基线 / 高频事项 / 深夜占比 / 高效时段
      - 注入洞察、日报、对话 prompt，让建议从"通用"变"懂你"
@@ -1507,6 +1593,7 @@
           <div class="txt" id="homeAdviceTxt">${esc(advice)}</div>
           <span class="src-badge off" id="homeAdviceBadge" title="当前内容来源">本地规则</span>
         </div>
+        <button class="btn block mt2" data-act="optimize-today" title="按优先级和空闲时间，一键重排今天未完成的事项">${svg("sparkle")} AI 优化今日</button>
         ${agentActions.length ? `<div class="agent-actions mt2">${agentActions
           .map(
             (a) => `
@@ -1523,6 +1610,7 @@
     renderRing($("#ring"), stats.timeDist, stats.totalHours);
     wireHome();
     scheduleFreshClear();
+    applyActHints(view);
     // AI 洞察异步升级：先展示离线建议，模型返回后无缝替换（带缓存），并同步徽标来源
     const aiTxt = $("#homeAdviceTxt");
     if (aiTxt)
@@ -1539,8 +1627,14 @@
       });
   }
 
+  const STAT_TITLES = {
+    focus: "专注时长：当前范围规划的日程总时长（点击看详情）",
+    efficiency: "效率评分：已完成事项占全部事项的比例（点击看详情）",
+    done: "已完成 / 全部事项数（点击看详情）",
+    advice: "AI 对当前日程数据的优化建议（点击查看并生成日报）",
+  };
   function statCell(icon, k, v, key) {
-    return `<div class="stat-cell clickable" role="button" tabindex="0" data-act="stat-detail" data-key="${key}"><span class="ico">${svg(icon)}</span><span class="v">${v}</span><span class="k">${k}</span>${key === "advice" ? '<span class="go">' + svg("chevron") + "</span>" : ""}</div>`;
+    return `<div class="stat-cell clickable" role="button" tabindex="0" data-act="stat-detail" data-key="${key}" title="${STAT_TITLES[key] || ""}"><span class="ico">${svg(icon)}</span><span class="v">${v}</span><span class="k">${k}</span>${key === "advice" ? '<span class="go">' + svg("chevron") + "</span>" : ""}</div>`;
   }
 
   function wireHome() {
@@ -1693,6 +1787,7 @@
       <div id="listMount">${itemsHTML}</div>
     </div>`;
     if (schedUI.open) wireForm();
+    applyActHints(view);
   }
 
   function addFormHTML() {
@@ -1870,6 +1965,7 @@
         <span class="ic">${svg("report")}</span>
         <div class="tx"><div class="t">${label} AI 日报</div><div class="s">基于你的执行情况，生成有温度的总结</div></div>
         <button class="btn sm" data-act="gen-report">${svg("sparkle")} 生成</button>
+        <button class="btn sm ghost" data-act="weekly-review" title="回顾上周 AI 建议的执行情况，生成周复盘">${svg("chart")} 周复盘</button>
       </div>
       ${insightBlock}
     </div>`;
@@ -1947,6 +2043,7 @@
     requestAnimationFrame(() => {
       $$(".bar > i", view).forEach((b) => (b.style.width = b.dataset.w + "%"));
     });
+    applyActHints(view);
     // AI 解读异步升级（有 Key 时替换为模型洞察并标注 AI 在线；无 Key/失败保持本地规则）
     if (scoped.length) {
       genInsight(stats).then((r) => {
@@ -2060,6 +2157,7 @@
         const ki2 = $("#apiKeyInput"); if (ki2) ki2.focus();
       });
     });
+    applyActHints(view);
   }
   function svgWrap(name) {
     return `<span class="ic">${svg(name)}</span>`;
@@ -2631,6 +2729,88 @@
         },
       }
     );
+  }
+
+  /* ============================================================
+     周报改进闭环：按周落库 AI 洞察/日报 → 周复盘对比"上周建议执行情况"
+     ============================================================ */
+  function weekKeyOf(d) {
+    return weekBounds(d)[0]; // 用周一日期作为周标识
+  }
+  function logWeeklyInsight(text) {
+    if (!text) return;
+    const prefs = Store.state.prefs;
+    if (!prefs.weekLog) prefs.weekLog = {};
+    const k = weekKeyOf(todayStr());
+    if (!prefs.weekLog[k]) prefs.weekLog[k] = [];
+    prefs.weekLog[k].push({ d: todayStr(), text: text.slice(0, 200) });
+    if (prefs.weekLog[k].length > 20) prefs.weekLog[k] = prefs.weekLog[k].slice(-20);
+    // 清理 6 周前的旧周
+    Object.keys(prefs.weekLog).forEach((wk) => {
+      if (wk < addDays(todayStr(), -42)) delete prefs.weekLog[wk];
+    });
+  }
+  function openWeeklyReview() {
+    const prefs = Store.state.prefs;
+    const thisK = weekKeyOf(todayStr());
+    const lastK = weekKeyOf(addDays(todayStr(), -7));
+    const lastEntries = (prefs.weekLog && prefs.weekLog[lastK]) || [];
+    const cur = computeStatsFor(scopeItems(Store.state.schedule, { mode: "week", anchor: todayStr() }));
+    const prev = computeStatsFor(scopeItems(Store.state.schedule, { mode: "week", anchor: addDays(todayStr(), -7) }));
+    const label = "周复盘";
+    openSheet(
+      `<div class="sheet-head"><div class="h">📊 周复盘</div><button class="x" data-close>${svg("close")}</button></div>
+       <div class="report-src"><span class="src-badge ${apiReady() ? "on" : "off"}" id="wkSrcBadge">${apiReady() ? "AI 在线" : "本地规则"}</span><span>对比上周建议与执行情况</span></div>
+       <div id="wkBody" class="report-body"><span class="typing"><i></i><i></i><i></i></span> AI 正在回顾上周…</div>
+       <button class="btn block mt3 hide" id="wkClose" data-close>关闭</button>`,
+      {
+        onOpen: (el) => {
+          const body = el.querySelector("#wkBody");
+          const closeBtn = el.querySelector("#wkClose");
+          const srcBadge = el.querySelector("#wkSrcBadge");
+          const finish = (text, via) => {
+            if (!el.isConnected) return;
+            body.innerHTML = `<div>${esc(text).replace(/\n/g, "<br>")}</div>`;
+            closeBtn.classList.remove("hide");
+            if (srcBadge) {
+              const on = via === "ai";
+              srcBadge.textContent = on ? "AI 在线" : "本地规则";
+              srcBadge.classList.toggle("on", on);
+              srcBadge.classList.toggle("off", !on);
+            }
+          };
+          const lastAdvice = lastEntries.map((e) => `${e.d}：${e.text}`).join("\n") || "（上周暂无 AI 记录）";
+          const curRate = cur.totalCount ? Math.round((cur.completedCount / cur.totalCount) * 100) : 0;
+          const prevRate = prev.totalCount ? Math.round((prev.completedCount / prev.totalCount) * 100) : 0;
+          if (apiReady()) {
+            const prompt =
+              `请写一份「周复盘」。今天日期：${todayStr()}。\n` +
+              `上周 AI 给用户的建议/洞察记录（供回顾是否执行）：\n${lastAdvice}\n\n` +
+              `数据对比：上周完成 ${prev.completedCount}/${prev.totalCount}（${prevRate}%）、规划 ${prev.totalHours.toFixed(1)}h；本周完成 ${cur.completedCount}/${cur.totalCount}（${curRate}%）、规划 ${cur.totalHours.toFixed(1)}h。\n` +
+              `请输出：① 上周建议的执行情况判断（结合数据）；② 本周相比上周的进步或退步（2 条）；③ 下周 1-2 条具体建议。140 字内，短段落。严禁臆造未列出的数据。`;
+            callLLM(
+              [
+                { role: "system", content: `你是严谨又温暖的私人时间管理复盘教练。${personaPromptLine()}` },
+                { role: "user", content: prompt },
+              ],
+              { temperature: 0.6, maxTokens: 700, timeoutMs: 40000 }
+            )
+              .then((text) => finish(text, "ai"))
+              .catch(() => finish(genOfflineWeekly(curRate, prevRate, lastEntries), "offline"));
+          } else {
+            setTimeout(() => finish(genOfflineWeekly(curRate, prevRate, lastEntries), "offline"), 600);
+          }
+        },
+      }
+    );
+  }
+  function genOfflineWeekly(curRate, prevRate, lastEntries) {
+    const diff = curRate - prevRate;
+    const trend = diff > 5 ? `完成率上升了 ${diff} 个百分点，执行力在变好 👍` : diff < -5 ? `完成率下降了 ${-diff} 个百分点，这周目标可能定高了或安排偏满` : "完成率基本持平，节奏稳定。";
+    const advicePart = lastEntries.length
+      ? `上周你收到了 ${lastEntries.length} 条 AI 建议，可对照看看哪些做到了：\n${lastEntries.slice(-3).map((e) => `• ${e.d}：${e.text.slice(0, 40)}…`).join("\n")}`
+      : "上周还没有 AI 建议记录，从这周开始积累吧。";
+    return `【周复盘 · 本地规则】\n\n本周完成 ${curRate}%，上周 ${prevRate}%。${trend}\n\n${advicePart}\n\n下周建议：给最重要的一件事先排进日程，再安排其它。`;
   }
 
   /* ============================================================
@@ -4005,6 +4185,14 @@ ${scheduleContext(Store.state.prefs.chatMemory === "custom" ? { from: Store.stat
       if (missed.length) return mkMsg("text", `${missed.length} 项日程已过未打卡：${missed.slice(0, 2).map((i) => "「" + i.title + "」").join("、")}${missed.length > 2 ? " 等" : ""}，记得补一下～`);
       return mkMsg("text", list.length ? "今日安排已全部结束，好好休息，或者规划一下明天的日程～" : "今天还没有日程，要不要现在规划一件小事？");
     }
+    // 优化今日：按优先级+空闲时间重排未完成事项（直接应用）
+    if (/优化(今天|今日)|重排(今天|今日)|重新安排(今天|今日)/.test(lower)) {
+      const res = replanToday();
+      if (!res.plan.length) return mkMsg("text", res.msg || "今天没有需要重排的事项啦～");
+      const applied = applyReplan(res.plan);
+      const lines = res.plan.map((p) => (p.drop ? `• ${p.title}：放不下，建议顺延明天` : `• ${p.title}：${p.start}~${p.end}`)).join("\n");
+      return mkMsg("text", `已按优先级+空闲时间优化今天（更新 ${applied} 项）：\n${lines}\n\n高优先级优先，帮你保住最重要的～`);
+    }
     // 重命名日程
     const rn = lower.match(/把(.+?)(?:改名为|改名成|重命名(?:成|为))(.+)/);
     if (rn) {
@@ -4115,6 +4303,36 @@ ${scheduleContext(Store.state.prefs.chatMemory === "custom" ? { from: Store.stat
       case "open-planner":
         openPlanner("");
         break;
+      case "optimize-today": {
+        const res = replanToday();
+        if (!res.plan.length) {
+          toast(res.msg || "今天没有需要重排的事项", "ok");
+          break;
+        }
+        const lines = res.plan
+          .map((p) => (p.drop ? `• ${esc(p.title)}　放不下，建议顺延到明天` : `• ${esc(p.title)}　${p.start} ~ ${p.end}`))
+          .join("<br>");
+        openSheet(
+          `<div class="sheet-head"><div class="h">🤖 AI 优化今日</div><button class="x" data-close>${svg("close")}</button></div>
+           <div class="card-sub">按优先级（高→中→低）和空闲时间，把未完成的事项重新排进今天剩余时间：</div>
+           <div class="mt2" style="line-height:1.9;font-size:13.5px">${lines}</div>
+           <div class="flex gap1 mt3">
+             <button class="btn ghost flex" data-close style="flex:1">取消</button>
+             <button class="btn flex" id="replanApply" style="flex:1">应用新安排</button>
+           </div>`,
+          {
+            onOpen: (el) => {
+              el.querySelector("#replanApply").addEventListener("click", () => {
+                const n = applyReplan(res.plan);
+                closeSheet();
+                renderCurrent();
+                toast(`已按新安排更新 ${n} 项日程 ✨`, "ok");
+              });
+            },
+          }
+        );
+        break;
+      }
       case "ai-act": {
         // 首页 AI 行动卡：按 kind 执行（默认打开规划浮层并预填）
         const kind = t.dataset.kind;
@@ -4205,6 +4423,9 @@ ${scheduleContext(Store.state.prefs.chatMemory === "custom" ? { from: Store.stat
         break;
       case "gen-report":
         openReport();
+        break;
+      case "weekly-review":
+        openWeeklyReview();
         break;
       case "home-issues":
         openIssuesSheet();
