@@ -1014,7 +1014,6 @@
   /* ---------- 功能按钮提示系统：给 data-act 元素补 title 说明（已有 title 不覆盖） ---------- */
   const ACT_HINTS = {
     "optimize-today": "按优先级和空闲时间，一键重排今天未完成的事项",
-    "open-planner": "用一句话让 AI 帮你安排日程",
     "open-chat": "打开 AI 时间管家，可对话、调教语气、操作日程",
     "weekly-review": "回顾上周 AI 建议的执行情况，生成周复盘",
     "gen-report": "生成当前范围的 AI 日报",
@@ -1217,8 +1216,7 @@
     const upcoming = sorted.filter((i) => !isDone(i) && toMin(i.startTime) > nowMin);
     let icon = "clock",
       tone = "info",
-      text = "",
-      interactive = true;
+      text = "";
     if (ongoing.length) {
       icon = "bolt";
       tone = "ok";
@@ -1240,25 +1238,12 @@
       icon = "bolt";
       tone = "warn";
       text = `${missed.length} 项日程已过未打卡：${missed.slice(0, 2).map((i) => "「" + i.title + "」").join("、")}${missed.length > 2 ? " 等" : ""}`;
-      interactive = false;
     } else {
       icon = "check";
       tone = "ok";
       text = "今日安排已全部结束，好好休息";
     }
-    return interactive
-      ? `<div class="focus-bar ${tone}" role="button" tabindex="0" data-act="open-planner" title="点击用一句话安排新日程">
-          <span class="fb-ico">${svg(icon)}</span><span class="fb-txt">${esc(text)}</span><span class="fb-go">${svg("chevron")}</span>
-        </div>`
-      : `<div class="focus-bar ${tone} plain"><span class="fb-ico">${svg(icon)}</span><span class="fb-txt">${esc(text)}</span></div>`;
-  }
-
-  /* ---------- 首页「一句话排期」快捷输入条（P1） ---------- */
-  function quickPlannerBar() {
-    return `<div class="quick-input">
-      <input id="homeQuickInput" class="ai-input" placeholder="一句话排期：明早 8 点背单词 1 小时" autocomplete="off" enterkeyhint="send" />
-      <button class="btn quick-send" id="homeQuickSend" title="AI 排期" aria-label="AI 排期">${svg("sparkle")}</button>
-    </div>`;
+    return `<div class="focus-bar ${tone} plain"><span class="fb-ico">${svg(icon)}</span><span class="fb-txt">${esc(text)}</span></div>`;
   }
 
   /* ---------- 首页冲突 / 过载检测（P1）：纯规则，不依赖 API ---------- */
@@ -1317,8 +1302,7 @@
     openSheet(
       `<div class="sheet-head"><div class="h">${label}日程预警</div><button class="x" data-close>${svg("close")}</button></div>
        <div class="detail-list">${rows}</div>
-       <div class="card-sub mt2">提示：重叠日程可长按编辑调整时间；安排过满时建议拆分或删除低优先级事项。</div>
-       <button class="btn block mt3" data-act="open-planner">${svg("sparkle")} 让 AI 帮我重新安排</button>`
+       <div class="card-sub mt2">提示：重叠日程可长按编辑调整时间；安排过满时建议拆分或删除低优先级事项。也可打开对话舱让 AI 帮忙重新安排。</div>`
     );
   }
 
@@ -1647,7 +1631,6 @@
 
       ${scopeBar()}
 
-      ${quickPlannerBar()}
       <div class="quick-actions mt1">
         <button class="chip-btn" data-act="copy-yesterday">${svg("repeat")} 和昨天一样</button>
         <button class="chip-btn" data-act="open-templates">${svg("folder")} 模板</button>
@@ -1785,27 +1768,6 @@
 
     if (hasFresh()) {
       $$(".tab-item", $("#tabbar")).forEach((t, i) => t.classList.toggle("has-badge", i === 0));
-    }
-
-    // 首页「一句话排期」快捷入口（P1）：回车 / 点 ✨ → 打开 AI 规划并自动发送
-    const qi = $("#homeQuickInput");
-    if (qi) {
-      const sendQuick = () => {
-        const v = qi.value.trim();
-        if (!v) {
-          qi.focus();
-          return;
-        }
-        openPlanner(v, true);
-      };
-      qi.addEventListener("keydown", (e) => {
-        if (e.key === "Enter") {
-          e.preventDefault();
-          sendQuick();
-        }
-      });
-      const qs = $("#homeQuickSend");
-      if (qs) qs.addEventListener("click", sendQuick);
     }
   }
 
@@ -2330,87 +2292,6 @@
   }
 
   /* ============================================================
-     智能排期对话框（多轮 + 冲突检测）
-     ============================================================ */
-  let plannerDraft = null;
-  let plannerLoading = false;
-
-  function openPlanner(prefill, autoSend) {
-    plannerDraft = null;
-    plannerLoading = false;
-    const prefillDate = relDateFromText(prefill) || todayStr();
-    const sheet = openSheet(
-      `<div class="sheet-head"><div class="h">AI 时间规划</div><button class="x" data-close>${svg("close")}</button></div>
-       <div class="card-sub">用一句话描述安排，例如「明天下午3点去健身房运动2小时」</div>
-       <div class="planner-date mt2">
-         <input type="date" class="date-input" id="plannerDate" value="${prefillDate}" aria-label="日期" />
-         <div class="hint-chips sm">
-           <span class="hint-chip" data-pdate="${todayStr()}">今天</span>
-           <span class="hint-chip" data-pdate="${addDays(todayStr(), 1)}">明天</span>
-           <span class="hint-chip" data-pdate="${addDays(todayStr(), 2)}">后天</span>
-         </div>
-       </div>
-       <div class="ai-input-wrap mt2">
-         <input class="ai-input" id="plannerInput" placeholder="说说你想安排的事…" value="${esc(prefill || "")}" />
-         <button class="btn" id="plannerSend" style="width:64px;height:46px;padding:0">${svg("send")}</button>
-       </div>
-       <div class="planner-ask" id="plannerAsk" hidden>
-         <span class="pa-ico">${svg("bulb")}</span>
-         <div class="pa-txt" id="plannerAskTxt"></div>
-         <button class="pa-x" data-act="dismiss-ask" title="收起">${svg("close")}</button>
-       </div>
-       <div class="planner-src" id="plannerSrc" hidden></div>
-       <div class="hint-chips">
-         ${["明早8点背单词1小时", "下午2点开会到4点", "晚上7点跑步半小时", "中午12点吃饭"].map((t) => `<span class="hint-chip" data-hint="${esc(t)}">${esc(t)}</span>`).join("")}
-       </div>`,
-      {
-        onOpen: (el) => {
-          const input = el.querySelector("#plannerInput");
-          const send = el.querySelector("#plannerSend");
-          const pd = el.querySelector("#plannerDate");
-          setTimeout(() => input.focus(), 50);
-          // 首页快捷输入：打开即自动发送，无需二次回车
-          if (prefill && autoSend) {
-            setTimeout(() => {
-              if (input.value.trim()) doPlannerSend();
-            }, 180);
-          }
-          input.addEventListener("keydown", (e) => {
-            if (e.key === "Enter") doPlannerSend();
-          });
-          send.addEventListener("click", doPlannerSend);
-          el.querySelectorAll("[data-pdate]").forEach((c) =>
-            c.addEventListener("click", () => {
-              if (pd) pd.value = c.dataset.pdate;
-            })
-          );
-          el.querySelectorAll(".hint-chip[data-hint]").forEach((c) =>
-            c.addEventListener("click", () => {
-              input.value = c.dataset.hint;
-              doPlannerSend();
-            })
-          );
-          const ask = el.querySelector("#plannerAsk");
-          const askX = el.querySelector("[data-act='dismiss-ask']");
-          if (askX)
-            askX.addEventListener("click", () => ask && ask.setAttribute("hidden", ""));
-        },
-      }
-    );
-  }
-
-  function setPlannerLoading(on) {
-    plannerLoading = on;
-    const send = overlay.querySelector("#plannerSend");
-    if (send) {
-      send.disabled = on;
-      send.innerHTML = on ? '<span class="spinner"></span>' : svg("send");
-    }
-    const input = overlay.querySelector("#plannerInput");
-    if (input) input.disabled = on;
-  }
-
-  /* ============================================================
      LLM API 调用层（OpenAI 兼容 / 支持浏览器直连的服务）
      推荐：硅基流动 SiliconFlow（api.siliconflow.cn/v1，支持 CORS）
      DeepSeek 官方接口不支持浏览器直连，请勿直填官方 Key。
@@ -2495,124 +2376,6 @@
     }
     return "";
   }
-  // AI 规划（在线）：调用模型解析用户输入 → 结构化任务
-  async function plannerViaApi(text, planDate) {
-    const pd = planDate || todayStr();
-    // 注入规划日已有日程，让模型主动避开冲突时段（而非事后拦截）
-    const dayItems = scopeItems(Store.state.schedule, { mode: "day", anchor: pd });
-    const existing = dayItems.length
-      ? dayItems
-          .slice()
-          .sort((a, b) => (a.startTime || "").localeCompare(b.startTime || ""))
-          .map((i) => `${i.startTime}-${i.endTime} ${i.title}${isDone(i) ? "(已完成)" : ""}`)
-          .join("、")
-      : "（当天暂无已有日程）";
-    const system = `你是严谨的中文时间管理助手。今天日期：${todayStr()}。用户选择的规划日期：${pd}。
-用户该日期已有日程：${existing}
-请把用户的自然语言描述解析为日程任务。规则：
-1. 时间一律输出 24 小时制 HH:MM（如 15:30）；结束时间若用户未说，按常见时长合理推断。
-2. 若用户要求的时段与已有日程重叠，请自动微调（前后移动 15-30 分钟）到不冲突的时段，并在 desc 注明调整原因；确实无法避开时保持原时段。
-3. 分类(tag)只能从 [学习,工作,运动,饮食,休息,社交,其他] 中选一个最贴切的。
-4. 只返回一个 JSON 对象，不要任何多余文字或解释。格式：
-{"tasks":[{"title":"日程名","startTime":"HH:MM","endTime":"HH:MM","tag":"学习","desc":"可选说明","priority":"高|中|低(可选,按重要性判断)"}],"question":""}
-5. 若信息不足无法完整解析（如缺少时间或时长且无法合理推断），将 question 设为一句追问，tasks 为空数组。`;
-    const userMsg = `我的安排：${text}`;
-    const content = await callLLM(
-      [
-        { role: "system", content: system },
-        { role: "user", content: userMsg },
-      ],
-      { temperature: 0.3, maxTokens: 1500, timeoutMs: 60000 }
-    );
-    const j = extractJson(content);
-    if (!j || typeof j !== "object") throw new Error("模型输出无法解析为 JSON");
-    if (j.question && (!Array.isArray(j.tasks) || j.tasks.length === 0)) {
-      return { question: String(j.question) };
-    }
-    if (!Array.isArray(j.tasks) || j.tasks.length === 0) throw new Error("模型未返回任务");
-    const tasks = j.tasks
-      .filter((t) => t && t.title)
-      .map((t) => {
-        const startTime = normTime(t.startTime);
-        const endTime = normTime(t.endTime);
-        const tag = ["学习", "工作", "运动", "饮食", "休息", "社交", "其他"].includes(t.tag) ? t.tag : "其他";
-        return {
-          title: String(t.title).trim().slice(0, 30),
-          startTime,
-          endTime,
-          tag,
-          tagColor: getColorForTag(tag),
-          desc: t.desc ? String(t.desc).trim() : "",
-          priority: ["高", "中", "低"].includes(t.priority) ? t.priority : "中",
-          date: planDate || todayStr(),
-        };
-      });
-    if (tasks.length === 0) throw new Error("模型未返回有效任务");
-    return { tasks };
-  }
-
-  function doPlannerSend() {
-    if (plannerLoading) return;
-    const input = overlay.querySelector("#plannerInput");
-    const pd = overlay.querySelector("#plannerDate");
-    const ask = overlay.querySelector("#plannerAsk");
-    const askTxt = overlay.querySelector("#plannerAskTxt");
-    // 每轮发送先收起上一轮的追问气泡
-    if (ask) ask.setAttribute("hidden", "");
-    const planDate = pd && pd.value ? pd.value : todayStr();
-    const text = input.value.trim();
-    if (!text) return;
-    setPlannerLoading(true);
-    // 标注本次解析来源：AI 在线（大模型） / 本地规则（离线解析）
-    const setSrc = (via, note) => {
-      const s = overlay.querySelector("#plannerSrc");
-      if (!s) return;
-      const on = via === "ai";
-      s.innerHTML = `<span class="src-badge ${on ? "on" : "off"}">${on ? "AI 在线" : "本地规则"}</span>${note ? `<span style="margin-left:6px">${esc(note)}</span>` : ""}`;
-      s.hidden = false;
-    };
-    const finish = (res, via) => {
-      setPlannerLoading(false);
-      if (!res || typeof res !== "object") return;
-      if (res.question) {
-        plannerDraft = res.pending || null;
-        input.value = "";
-        setSrc("offline", "信息不足，等待补充");
-        // 追问内容常驻显示，不自动消失，用户看清后再补充
-        if (ask && askTxt) {
-          askTxt.textContent = res.question;
-          ask.removeAttribute("hidden");
-        }
-        input.focus();
-        return;
-      }
-      plannerDraft = null;
-      setSrc(via, via === "ai" ? "由大模型解析你的需求" : "本地规则解析（未配置 API 或已回退）");
-      res.tasks.forEach((t) => (t.date = planDate || t.date || todayStr()));
-      if (checkConflicts(res.tasks)) {
-        showConflict(res.tasks);
-        return;
-      }
-      addTasksFromPlanner(res.tasks);
-    };
-    const offline = () => finish(buildFreeDemoTasks(text, undefined, plannerDraft), "offline");
-    setTimeout(async () => {
-      if (apiReady()) {
-        try {
-          const r = await plannerViaApi(text, planDate);
-          finish(r, "ai");
-          return;
-        } catch (err) {
-          console.warn("API 规划失败，回退离线解析：", err);
-          toast(`在线规划失败（${err.message || "网络错误"}），已回退离线解析`, "warn");
-          offline();
-          return;
-        }
-      }
-      offline();
-    }, 650);
-  }
-
   // 判断某重复/普通日程在指定日期 date 是否「出现」（用于冲突检测，与 scopeItems 展开逻辑一致，便于回迁）
   function occursOn(ex, date) {
     if (!ex.repeat || ex.repeat === "none") return (ex.date || todayStr()) === date;
@@ -2705,114 +2468,6 @@
     }
     Store.addSchedule(Object.assign({}, task, { startTime: plan.startTime, endTime: plan.endTime, isFresh: true }));
     return { applied: `${plan.startTime}~${plan.endTime}` };
-  }
-
-  function showConflict(tasks) {
-    const det = conflictDetail(tasks);
-    const plan = tasks.map((t) => `• ${t.startTime} ~ ${t.endTime}  ${t.title}`).join("\n");
-    const planCards = det
-      .map(({ task, conflicts }, di) => {
-        const plans = buildConflictPlans(task, conflicts);
-        const cards = plans
-          .map(
-            (p, pi) => `<button class="plan-card" data-di="${di}" data-pi="${pi}">
-              <span class="pc-label">方案 ${"ABC"[pi]} · ${p.label}</span>
-              <span class="pc-desc">${esc(p.desc)}</span>
-            </button>`
-          )
-          .join("");
-        return `<div class="plan-group">
-          <div class="pg-title">「${esc(task.title)}」${task.startTime}~${task.endTime} 与「${esc(conflicts.map((c) => c.title).join("、"))}」重叠</div>
-          ${cards || '<div class="muted" style="font-size:12px">暂无可自动调整的空闲时段，建议改到其它日期。</div>'}
-        </div>`;
-      })
-      .join("");
-    openSheet(
-      `<div class="sheet-head"><div class="h">🕐 时间排期提醒</div><button class="x" data-close>${svg("close")}</button></div>
-       <div class="card-sub" style="line-height:1.7">您安排的：<br><b style="white-space:pre-line">${esc(plan)}</b><br>与已有日程时间重叠。选一个方案我帮你调整，或自己来：</div>
-       ${planCards ? `<div class="mt2">${planCards}</div>` : ""}
-       <div class="flex gap1 mt3">
-         <button class="btn ghost flex" style="flex:1" id="conflictSelf">✋ 我自己来</button>
-         <button class="btn danger flex" style="flex:1" id="forceAdd">仍按此添加</button>
-       </div>`,
-      {
-        onOpen: (el) => {
-          el.querySelectorAll(".plan-card").forEach((card) => {
-            card.addEventListener("click", () => {
-              const di = +card.dataset.di;
-              const pi = +card.dataset.pi;
-              const { task } = det[di];
-              const p = buildConflictPlans(task, det[di].conflicts)[pi];
-              if (!p) return;
-              applyConflictPlan(task, p);
-              closeSheet();
-              renderCurrent();
-              toast(`已按方案 ${"ABC"[pi]} 添加「${task.title}」✅`, "ok");
-            });
-          });
-          el.querySelector("#conflictSelf").addEventListener("click", () => {
-            closeSheet();
-            navigate(0);
-            schedUI.open = true;
-            schedUI.title = tasks[0].title;
-            schedUI.sh = Math.floor(toMin(tasks[0].startTime) / 60);
-            schedUI.sm = toMin(tasks[0].startTime) % 60;
-            const dur = Math.max(15, toMin(tasks[0].endTime) - toMin(tasks[0].startTime));
-            schedUI.dh = Math.floor(dur / 60);
-            schedUI.dm = dur % 60;
-            schedUI.date = tasks[0].date || todayStr();
-            renderCurrent();
-            toast("已打开手动添加表单，时间可以自己改", "ok");
-          });
-          el.querySelector("#forceAdd").addEventListener("click", () => {
-            addTasksFromPlanner(tasks);
-            closeSheet();
-          });
-        },
-      }
-    );
-  }
-
-  function addTasksFromPlanner(tasks) {
-    const ids = [];
-    let skipped = 0;
-    tasks.forEach((t) => {
-      // 去重防护：同日同名同时间段视为完全重复，跳过
-      const date = t.date || todayStr();
-      const dup = Store.state.schedule.some(
-        (ex) => (ex.date || todayStr()) === date && ex.title === t.title && ex.startTime === t.startTime && ex.endTime === t.endTime
-      );
-      if (dup) {
-        skipped++;
-        return;
-      }
-      const it = Store.addSchedule({
-        title: t.title,
-        startTime: t.startTime,
-        endTime: t.endTime,
-        desc: t.desc || "",
-        tag: t.tag,
-        tagColor: t.tagColor,
-        date,
-        isCompleted: false,
-        isFresh: true,
-        priority: t.priority || "中",
-      });
-      ids.push(it.id);
-    });
-    closeSheet();
-    if (tasks.length) {
-      scope.mode = "day";
-      scope.anchor = tasks[0].date || todayStr();
-    }
-    navigate(0);
-    const added = ids.length;
-    if (!added) {
-      toast(`这些日程之前已经添加过了，无需重复 ✌️${skipped ? `（跳过 ${skipped} 项）` : ""}`, "warn");
-      return ids;
-    }
-    undoableToast(`已智能添加 ${added} 项日程 ✨${skipped ? `（跳过 ${skipped} 项重复）` : ""}`, "ok", { kind: "adds", ids });
-    return ids;
   }
 
   /* ============================================================
@@ -4266,7 +3921,7 @@
      AI 对话页（全屏浮层 + 离线助手）
      ============================================================ */
   let chatDraft = null;
-  function openChat() {
+  function openChat(prefill) {
     const layer = document.createElement("div");
     layer.id = "chatLayer";
     layer.style.cssText =
@@ -4297,6 +3952,11 @@
     const input = layer.querySelector("#chatInput");
     const send = layer.querySelector("#chatSend");
     const memTag = layer.querySelector("#chatMemTag");
+    // 外部入口（如首页行动卡）传入预填文案：填入输入框并聚焦
+    if (prefill && input) {
+      input.value = prefill;
+      setTimeout(() => input.focus(), 60);
+    }
 
     // 记忆范围选择：仅当日 / 本周 / 本月 / 全局 / 自定义（起止日期）
     function openMemPicker() {
@@ -5121,7 +4781,7 @@ ${scheduleContext(Store.state.prefs.chatMemory === "custom" ? { from: Store.stat
         break;
       }
       case "open-planner":
-        openPlanner("");
+        openChat();
         break;
       case "optimize-today": {
         const res = replanToday();
@@ -5154,12 +4814,12 @@ ${scheduleContext(Store.state.prefs.chatMemory === "custom" ? { from: Store.stat
         break;
       }
       case "ai-act": {
-        // 首页 AI 行动卡：按 kind 执行（默认打开规划浮层并预填）
+        // 首页 AI 行动卡：按 kind 执行（默认打开对话舱并预填，AI 排期统一走对话舱）
         const kind = t.dataset.kind;
         const prefill = t.dataset.prefill || "";
         if (kind === "issues") openIssuesSheet();
         else if (kind === "report") openReport();
-        else openPlanner(prefill, false);
+        else openChat(prefill);
         break;
       }
       case "set-scope":
