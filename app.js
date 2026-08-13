@@ -1824,7 +1824,7 @@
   /* ============================================================
      日程页
      ============================================================ */
-  const schedUI = { open: false, sh: 9, sm: 0, dh: 1, dm: 0, tag: "其他", color: "#A1A1AA", custom: "", title: "", date: todayStr(), priority: "中" };
+  const schedUI = { open: false, sh: 9, sm: 0, dh: 1, dm: 0, tag: "其他", color: "#A1A1AA", custom: "", title: "", date: todayStr(), priority: "中", repeat: "none" };
 
   function renderSchedule() {
     const scoped = scopeItems(Store.state.schedule, scope);
@@ -1963,6 +1963,12 @@
           ${["高", "中", "低"].map((p) => `<span class="seg-btn ${schedUI.priority === p ? "on" : ""}" data-prio="${p}">${p}</span>`).join("")}
         </div>
       </div>
+      <div class="form-row">
+        <span class="form-label">重复</span>
+        <div class="seg-group" id="repSeg">
+          ${["none", "daily", "weekly"].map((v) => `<span class="seg-btn ${schedUI.repeat === v ? "on" : ""}" data-rep="${v}">${v === "none" ? "不重复" : v === "daily" ? "每天" : "每周"}</span>`).join("")}
+        </div>
+      </div>
       <div class="flex gap1 mt2">
         <button class="btn ghost flex" style="flex:1" data-act="toggle-form">取消</button>
         <button class="btn flex" style="flex:1" data-act="confirm-add">添加日程</button>
@@ -1981,6 +1987,14 @@
         b.addEventListener("click", () => {
           schedUI.priority = b.dataset.prio;
           pr.querySelectorAll("[data-prio]").forEach((x) => x.classList.toggle("on", x === b));
+        })
+      );
+    const rep = $("#repSeg");
+    if (rep)
+      rep.querySelectorAll("[data-rep]").forEach((b) =>
+        b.addEventListener("click", () => {
+          schedUI.repeat = b.dataset.rep;
+          rep.querySelectorAll("[data-rep]").forEach((x) => x.classList.toggle("on", x === b));
         })
       );
     const di = $("#dateInput");
@@ -2033,6 +2047,7 @@
       isCompleted: false,
       isFresh: true,
       priority: schedUI.priority || "中",
+      repeat: schedUI.repeat || "none",
     };
     // 去重防护：同日同名 → 先询问再添加
     const dupes = findDupes(candidate);
@@ -2067,6 +2082,7 @@
     schedUI.dh = 1;
     schedUI.dm = 0;
     schedUI.date = todayStr();
+    schedUI.repeat = "none";
     haptic(20);
     toast(`已添加 ${addedLabel} 的日程 ✨`, "ok", {
       label: "撤销",
