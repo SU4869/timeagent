@@ -844,6 +844,7 @@
       .join("\n");
     const prompt =
       `你是用户的私人时间管理洞察助手。今天真实日期：${todayStr()}。\n` +
+      `关于用户的长期习惯观察（供参考，与下方日程矛盾时以下方日程为准）：${buildUserProfile() || "（历史数据不足）"}\n` +
       `用户当前查看「${label}」概览，该周期严格只有下面列出的 ${scoped.length} 个日程（${withDate ? "日期 " : ""}时间 事项 状态 /分类）：\n${rows || "（该周期暂无日程）"}\n` +
       `【硬性要求】你的分析必须完全基于上述真实日程，严禁臆造任何未列出的日程、数字或完成情况；若只有 1 个日程，就不要谈"分类失衡/多任务协调"，请聚焦这一个事项本身给建议。\n` +
       `请输出最多 3 句：① 一句话贴合实际的总评；② 1 条针对现有日程的具体可执行改进建议（如把某事项提前、补全休息、降低密度）；③ 如需，1 句鼓励。` +
@@ -1272,6 +1273,53 @@
         });
     }
     return actions.slice(0, 3);
+  }
+
+  /* ============================================================
+     用户画像（长期记忆，本地规则零 token）
+     - 从近 30 天日程提取：常安排时段 / 完成率基线 / 高频事项 / 深夜占比 / 高效时段
+     - 注入洞察、日报、对话 prompt，让建议从"通用"变"懂你"
+     ============================================================ */
+  let profileCache = { at: 0, text: "" };
+  function buildUserProfile() {
+    const t = todayStr();
+    const sched = Store.state.schedule;
+    if (!sched.length) return "";
+    if (profileCache.at && Date.now() - profileCache.at < 60 * 1000) return profileCache.text;
+    const recent = sched.filter((i) => (i.date || t) >= addDays(t, -30) && (i.date || t) <= t);
+    if (!recent.length) return "";
+    const parts = [];
+    const hourCnt = {};
+    recent.forEach((i) => {
+      const h = +i.startTime.split(":")[0];
+      hourCnt[h] = (hourCnt[h] || 0) + 1;
+    });
+    const hours = Object.entries(hourCnt).sort((a, b) => b[1] - a[1]);
+    if (hours.length) parts.push(`常安排时段 ${hours.slice(0, 3).map(([h]) => h + "点").join("、")}`);
+    const twoWk = recent.filter((i) => (i.date || t) >= addDays(t, -14));
+    if (twoWk.length) {
+      const done = twoWk.filter((i) => isDone(i)).length;
+      parts.push(`近两周完成率 ${Math.round((done / twoWk.length) * 100)}%`);
+    }
+    const freq = {};
+    twoWk.forEach((i) => {
+      freq[i.title] = (freq[i.title] || 0) + 1;
+    });
+    const top = Object.entries(freq).sort((a, b) => b[1] - a[1]).slice(0, 3);
+    if (top.length) parts.push(`高频事项 ${top.map(([k, v]) => k + "×" + v).join("、")}`);
+    const night = recent.filter((i) => parseHM(i.startTime) >= 21).length;
+    if (night) parts.push(`深夜任务占 ${Math.round((night / recent.length) * 100)}%`);
+    const doneHours = recent.filter((i) => isDone(i)).map((i) => +i.startTime.split(":")[0]);
+    if (doneHours.length) {
+      const dh = {};
+      doneHours.forEach((h) => {
+        dh[h] = (dh[h] || 0) + 1;
+      });
+      const best = Object.entries(dh).sort((a, b) => b[1] - a[1])[0];
+      if (best) parts.push(`高效时段 ${best[0]} 点`);
+    }
+    profileCache = { at: Date.now(), text: parts.join("；") };
+    return profileCache.text;
   }
 
   /* ---------- 周/月环比趋势（P2）：较上一周期专注时长变化，纯离线 ---------- */
@@ -2382,6 +2430,7 @@
               .join("\n");
             const prompt =
               `请为「${label}」写一份简短温暖的时间日报。今天日期：${todayStr()}。\n` +
+              `关于用户的长期习惯观察（供参考，与下方日程矛盾时以下方日程为准）：${buildUserProfile() || "（历史数据不足）"}\n` +
               `以下是用户「${label}」严格全部 ${scoped.length} 个日程（${withDate ? "日期 " : ""}时间 事项 状态 /分类）：\n${rows || "（该时间段暂无日程）"}\n` +
               `【硬性要求】必须完全基于上述真实日程写作，严禁臆造任何未列出的日程、数字或完成情况；若只有 1 个日程，就围绕这一个事项本身展开，不要谈"多任务协调/分类失衡"。\n` +
               `请输出：一句话总评；2-3 条亮点或发现；1 条具体的改进建议。全文 150 字以内，短段落，语气自然，不要用夸张赞美。`;
@@ -2742,6 +2791,84 @@
 
   function initReminders() {
     Store.state.schedule.forEach((it) => scheduleReminder(it));
+  }
+
+  /* ============================================================
+     AI 主动聊天（proactive）：AI 自主找你说话
+     - 触发（本地规则零 token）：距下一项 ≤20min / 过期未完成 / 连续未完成 / 全部完成鼓励
+     - 展现：对话舱已打开→直接插入 AI 消息；未打开→toast 横幅（点击进对话舱）
+     - 防打扰：每天最多 4 次（localStorage 按日期计数）
+     ============================================================ */
+  const PROACTIVE_KEY = "timeagent_proactive_v1";
+  function proactiveTodayCount() {
+    try {
+      const raw = JSON.parse(localStorage.getItem(PROACTIVE_KEY) || "{}");
+      return raw.d === todayStr() ? raw.n || 0 : 0;
+    } catch (e) {
+      return 0;
+    }
+  }
+  function proactiveLogOnce() {
+    try {
+      const raw = JSON.parse(localStorage.getItem(PROACTIVE_KEY) || "{}");
+      const n = raw.d === todayStr() ? raw.n || 0 : 0;
+      localStorage.setItem(PROACTIVE_KEY, JSON.stringify({ d: todayStr(), n: n + 1 }));
+    } catch (e) {}
+  }
+  function proactivePick() {
+    const t = todayStr();
+    const nowMin = new Date().getHours() * 60 + new Date().getMinutes();
+    const today = scopeItems(Store.state.schedule, { mode: "day", anchor: t });
+    if (!today.length) return null;
+    const sorted = today.slice().sort((a, b) => (a.startTime || "").localeCompare(b.startTime || ""));
+    const upcoming = sorted.filter((i) => !isDone(i) && toMin(i.startTime) > nowMin);
+    const next = upcoming[0];
+    if (next) {
+      const diff = toMin(next.startTime) - nowMin;
+      if (diff <= 20) return { text: `还有 ${diff} 分钟就到「${next.title}」了，先准备一下？`, tone: "ok" };
+    }
+    const missed = sorted.filter((i) => !isDone(i) && toMin(i.endTime) < nowMin);
+    if (missed.length && !upcoming.length)
+      return { text: `「${missed[0].title}」时间已经过了，是忘了打卡还是没来得及？`, tone: "warn" };
+    const miss = {};
+    Store.state.schedule.forEach((i) => {
+      const d = i.date || t;
+      if (!isDone(i) && d >= addDays(t, -3) && d <= t) miss[i.title] = (miss[i.title] || 0) + 1;
+    });
+    const missTop = Object.entries(miss).sort((a, b) => b[1] - a[1])[0];
+    if (missTop && missTop[1] >= 2)
+      return { text: `「${missTop[0]}」连续 ${missTop[1]} 天没完成，要不要我帮你换个更合适的时间？`, tone: "warn" };
+    if (nowMin > 6 * 60 && sorted.length && sorted.every((i) => isDone(i)))
+      return { text: `今天的安排全部完成啦，干得漂亮！要不要安排点放松时间？`, tone: "ok" };
+    return null;
+  }
+  function proactiveChatPush(text, via) {
+    const layer = document.getElementById("chatLayer");
+    const list = layer && layer.querySelector("#chatList");
+    if (!list) return false;
+    const m = mkMsg("text", text, null, via || "offline");
+    Store.state.chat.push(m);
+    Store.save();
+    list.appendChild(chatBubble(m));
+    list.scrollTop = list.scrollHeight;
+    return true;
+  }
+  function proactiveFire() {
+    if (proactiveTodayCount() >= 4) return;
+    const hit = proactivePick();
+    if (!hit) return;
+    proactiveLogOnce();
+    if (document.getElementById("chatLayer")) {
+      proactiveChatPush(`（主动提醒）${hit.text}`);
+    } else {
+      toast(`AI 主动提醒：${hit.text}`, hit.tone === "warn" ? "warn" : "ok", {
+        label: "去看看",
+        onClick: () => {
+          openChat();
+          setTimeout(() => proactiveChatPush(hit.text), 200);
+        },
+      });
+    }
   }
 
   /* ============================================================
@@ -3109,6 +3236,7 @@
                   role: "system",
                   content: `你是 TimeAgent 智能时间管家，用简洁友好的中文回答。今天日期：${todayStr()}。
 你有权查看和操作 app 内全部日程数据（查询任意日期、添加、删除、打卡、改期）。
+关于用户的长期习惯观察（供参考，与下方日程矛盾时以下方日程为准）：${buildUserProfile() || "（历史数据不足）"}
 当前记忆范围：${(Store.state.prefs.chatMemory === "custom" ? `自定义区间 ${Store.state.prefs.chatMemoryFrom}~${Store.state.prefs.chatMemoryTo}` : chatMemoryLabel(Store.state.prefs.chatMemory || "week"))}。范围内真实日程如下（范围外数据当前不可见，用户问到时如实说明，或建议切换记忆范围）：
 ${scheduleContext(Store.state.prefs.chatMemory === "custom" ? { from: Store.state.prefs.chatMemoryFrom, to: Store.state.prefs.chatMemoryTo } : Store.state.prefs.chatMemory || "week")}
 你可以帮用户添加/删除/打卡日程、查询安排、查询空闲时间，也可以闲聊。若用户要求安排日程（含事项和时间），先给一句简短确认，然后在回复末尾输出一行排期数据：
@@ -3725,6 +3853,13 @@ ${scheduleContext(Store.state.prefs.chatMemory === "custom" ? { from: Store.stat
       return false;
     };
     initReminders();
+    // AI 主动聊天：启动 15s 后首次检查，之后每 20 分钟一次；回到前台时也检查（暴露给测试/调试）
+    window.__taProactive = proactiveFire;
+    setTimeout(proactiveFire, 15 * 1000);
+    setInterval(proactiveFire, 20 * 60 * 1000);
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "visible") setTimeout(proactiveFire, 3000);
+    });
     // 软键盘兼容（安卓 WebView edge-to-edge）：输入框聚焦时滚到可视区中央；
     // visualViewport 变化（键盘弹出/收起）时再校准一次，避免键盘遮挡已输入内容
     document.addEventListener("focusin", (e) => {
