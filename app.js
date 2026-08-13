@@ -2231,7 +2231,7 @@
         <div class="setting-row mt2"><span class="lbl">API 地址（高级）</span></div>
         <input class="input" id="apiBaseInput" placeholder="https://api.siliconflow.cn/v1" value="${esc(Store.state.apiBase)}" />
         <button class="btn block mt2" data-act="save-api">保存配置</button>
-        <div class="card-sub mt1" style="line-height:1.6">两种接入方式（任选其一）：<br/>① <b>直连</b>：填支持浏览器直连的服务（推荐<b>硅基流动</b> api.siliconflow.cn/v1，含免费模型）；<br/>② <b>代理</b>：DeepSeek 官方 Key 需经代理转发，API 地址填 <code>/api/deepseek</code>（需部署 Netlify 云函数）。<br/>失败时自动回退离线解析，不影响使用。</div>
+        <div class="card-sub mt1" style="line-height:1.6">两种接入方式（任选其一）：<br/>① <b>直连</b>：填支持浏览器直连的服务（推荐<b>硅基流动</b> api.siliconflow.cn/v1，含免费模型）；<br/>② <b>代理</b>：DeepSeek 官方 Key 需经代理转发，API 地址填 <code>/api/deepseek</code>（由站点托管的云函数转发）。<br/>失败时自动回退离线解析，不影响使用。</div>
       </div>
 
       <div class="card">

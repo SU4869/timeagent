@@ -1,0 +1,12 @@
+[
+  {
+    "relation": ["delegate_permission/common.handle_all_urls"],
+    "target": {
+      "namespace": "android_app",
+      "package_name": "app.netlify.cheerful_vacherin_eea028.twa",
+      "sha256_cert_fingerprints": [
+        "5C:57:41:99:A0:48:ED:A1:6B:CA:8B:76:E1:81:F3:E2:7E:82:05:1D:B8:A5:D4:B5:1B:BA:92:DB:F0:FB:C7:AA"
+      ]
+    }
+  }
+]

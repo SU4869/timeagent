@@ -1,0 +1,16 @@
+# Cloudflare Pages 自定义响应头
+# app.js 是版本演进核心，禁用缓存避免 WebView/PWA 用旧版
+/app.js
+  Cache-Control: public, max-age=0, must-revalidate
+
+# PWA 相关资源：短缓存即可
+/manifest.webmanifest
+  Cache-Control: public, max-age=300
+/icon.svg
+  Cache-Control: public, max-age=86400
+/icon-512.png
+  Cache-Control: public, max-age=86400
+
+# HTML 页面不缓存
+/*.html
+  Cache-Control: public, max-age=0, must-revalidate
