@@ -973,6 +973,40 @@
     while (wrap.children.length > 3) wrap.firstChild.remove();
   }
 
+  /* ---------- 触感反馈（安卓 WebView 支持 navigator.vibrate） ---------- */
+  function haptic(ms = 20) {
+    try {
+      if (typeof navigator !== "undefined" && navigator.vibrate) navigator.vibrate(ms);
+    } catch (e) {}
+  }
+
+  /* ---------- 去重检测：同日同名视为重复 ---------- */
+  function findDupes(item) {
+    const date = item.date || todayStr();
+    return Store.state.schedule.filter((x) => x.id !== item.id && (x.date || todayStr()) === date && x.title === item.title);
+  }
+
+  /* ---------- 统一撤销：单条快照 + toast 撤销按钮 ---------- */
+  let undoSnap = null;
+  function undoableToast(msg, tone, snap) {
+    undoSnap = snap;
+    toast(msg, tone, {
+      label: "撤销",
+      onClick: () => {
+        const s = undoSnap;
+        undoSnap = null;
+        if (!s) return;
+        try {
+          if (s.kind === "remove") Store.addSchedule(Object.assign({}, s.item));
+          else if (s.kind === "patch") Store.updateSchedule(s.id, s.before);
+          else if (s.kind === "adds") s.ids.forEach((x) => Store.removeSchedule(x));
+        } catch (e) {}
+        renderCurrent();
+        toast("已撤销", "ok");
+      },
+    });
+  }
+
   const overlay = $("#overlay");
   /* ---------- 功能按钮提示系统：给 data-act 元素补 title 说明（已有 title 不覆盖） ---------- */
   const ACT_HINTS = {
@@ -1719,8 +1753,17 @@
       body.addEventListener("click", (e) => {
         if (e.target.closest("[data-act]")) return; // 交给委托处理（完成/删除/分类）
         if (suppressClick) return; // 长按刚触发，忽略本次点击（不误触完成）
+        const before = JSON.parse(JSON.stringify(Store.state.schedule.find((x) => x.id === id) || {}));
         Store.toggleSchedule(id, date);
+        haptic(30);
         renderCurrent();
+        const now = Store.state.schedule.find((x) => x.id === id);
+        const doneNow = now && (now.repeat && now.repeat !== "none" ? (now.doneDates || []).indexOf(date) >= 0 : !!now.isCompleted);
+        undoableToast(doneNow ? `已完成「${item.title}」` : `已取消「${item.title}」的完成`, "ok", {
+          kind: "patch",
+          id,
+          before: { isCompleted: before.isCompleted, doneAt: before.doneAt, doneAtMap: before.doneAtMap, doneDates: before.doneDates },
+        });
       });
     });
 
@@ -1968,7 +2011,7 @@
     if (tag && !allTags().some((t) => t.tag === tag)) {
       Store.state.customTags.push({ tag, color: schedUI.color });
     }
-    Store.addSchedule({
+    const candidate = {
       title,
       startTime: startStr,
       endTime: endStr,
@@ -1979,14 +2022,49 @@
       isCompleted: false,
       isFresh: true,
       priority: schedUI.priority || "中",
-    });
-    const addedLabel = humanDateLabel(schedUI.date || todayStr());
+    };
+    // 去重防护：同日同名 → 先询问再添加
+    const dupes = findDupes(candidate);
+    if (dupes.length) {
+      const first = dupes[0];
+      openSheet(
+        `<div class="sheet-head"><div class="h">发现重复日程</div><button class="x" data-close>${svg("close")}</button></div>
+         <div class="card-sub mt1" style="line-height:1.7">${esc(humanDateLabel(candidate.date))}已经有「${esc(first.title)}」（${esc(first.startTime)}~${esc(first.endTime)}）了。<br><br>是重复添加，还是想改个时间？</div>
+         <div class="flex gap1 mt3">
+           <button class="btn ghost flex" data-close style="flex:1">改时间</button>
+           <button class="btn flex" id="dupForce" style="flex:1">仍要添加</button>
+         </div>`,
+        {
+          onOpen: (el) => {
+            el.querySelector("#dupForce").addEventListener("click", () => {
+              closeSheet();
+              doConfirmAdd(candidate);
+            });
+          },
+        }
+      );
+      return;
+    }
+    doConfirmAdd(candidate);
+  }
+
+  function doConfirmAdd(candidate) {
+    const it = Store.addSchedule(candidate);
+    const addedLabel = humanDateLabel(candidate.date || todayStr());
     schedUI.title = "";
     schedUI.open = false;
     schedUI.dh = 1;
     schedUI.dm = 0;
     schedUI.date = todayStr();
-    toast(`已添加 ${addedLabel} 的日程 ✨`, "ok");
+    haptic(20);
+    toast(`已添加 ${addedLabel} 的日程 ✨`, "ok", {
+      label: "撤销",
+      onClick: () => {
+        Store.removeSchedule(it.id);
+        renderCurrent();
+        toast("已撤销添加", "ok");
+      },
+    });
     renderSchedule();
   }
 
@@ -2655,27 +2733,45 @@
   }
 
   function addTasksFromPlanner(tasks) {
-    tasks.forEach((t) =>
-      Store.addSchedule({
+    const ids = [];
+    let skipped = 0;
+    tasks.forEach((t) => {
+      // 去重防护：同日同名同时间段视为完全重复，跳过
+      const date = t.date || todayStr();
+      const dup = Store.state.schedule.some(
+        (ex) => (ex.date || todayStr()) === date && ex.title === t.title && ex.startTime === t.startTime && ex.endTime === t.endTime
+      );
+      if (dup) {
+        skipped++;
+        return;
+      }
+      const it = Store.addSchedule({
         title: t.title,
         startTime: t.startTime,
         endTime: t.endTime,
         desc: t.desc || "",
         tag: t.tag,
         tagColor: t.tagColor,
-        date: t.date || todayStr(),
+        date,
         isCompleted: false,
         isFresh: true,
         priority: t.priority || "中",
-      })
-    );
+      });
+      ids.push(it.id);
+    });
     closeSheet();
     if (tasks.length) {
       scope.mode = "day";
       scope.anchor = tasks[0].date || todayStr();
     }
     navigate(0);
-    toast(`已智能添加 ${tasks.length} 项日程 ✨`, "ok");
+    const added = ids.length;
+    if (!added) {
+      toast(`这些日程之前已经添加过了，无需重复 ✌️${skipped ? `（跳过 ${skipped} 项）` : ""}`, "warn");
+      return ids;
+    }
+    undoableToast(`已智能添加 ${added} 项日程 ✨${skipped ? `（跳过 ${skipped} 项重复）` : ""}`, "ok", { kind: "adds", ids });
+    return ids;
   }
 
   /* ============================================================
@@ -4274,30 +4370,43 @@ ${scheduleContext(Store.state.prefs.chatMemory === "custom" ? { from: Store.stat
             if (tasks && tasks.length) {
               if (cleanText) pushMsg(mkMsg("text", cleanText, null, "ai"));
               const conflict = checkConflicts(tasks);
-              tasks.forEach((t) =>
-                Store.addSchedule({
+              const ids = [];
+              let skipped = 0;
+              tasks.forEach((t) => {
+                // 去重防护：同日同名同时间段跳过
+                const date = t.date || todayStr();
+                const dup = Store.state.schedule.some((ex) => (ex.date || todayStr()) === date && ex.title === t.title && ex.startTime === t.startTime && ex.endTime === t.endTime);
+                if (dup) {
+                  skipped++;
+                  return;
+                }
+                const it = Store.addSchedule({
                   title: t.title,
                   startTime: t.startTime,
                   endTime: t.endTime,
                   desc: t.desc,
                   tag: t.tag,
                   tagColor: t.tagColor,
-                  date: t.date,
+                  date,
                   isCompleted: false,
                   isFresh: true,
                   priority: t.priority || "中",
-                })
-              );
-              tasks.forEach((t) =>
+                });
+                ids.push(it.id);
                 pushMsg({
                   type: "card",
                   isUser: false,
                   content: `已为你安排「${t.title}」📌`,
-                  cardData: { title: t.title, time: `${t.startTime} ~ ${t.endTime}`, tag: t.tag, color: t.tagColor, date: t.date },
+                  cardData: { title: t.title, time: `${t.startTime} ~ ${t.endTime}`, tag: t.tag, color: t.tagColor, date },
                   via: "ai",
-                })
-              );
-              toast(conflict ? `已添加 ${tasks.length} 项日程（部分与已有日程时间重叠）⚠️` : `已智能添加 ${tasks.length} 项日程 ✨`, conflict ? "warn" : "ok");
+                });
+              });
+              const added = ids.length;
+              if (added) {
+                undoableToast(`已智能添加 ${added} 项日程 ✨${skipped ? `（跳过 ${skipped} 项重复）` : ""}${conflict ? "（部分与已有日程时间重叠）⚠️" : ""}`, conflict ? "warn" : "ok", { kind: "adds", ids });
+              } else {
+                toast(`这些日程之前已经添加过了，无需重复 ✌️${skipped ? `（跳过 ${skipped} 项）` : ""}`, "warn");
+              }
               return;
             }
             // 解析 AI 操作数据：删除 / 打卡 / 改期（在线 agent 直接操作真实日程）
@@ -4324,11 +4433,18 @@ ${scheduleContext(Store.state.prefs.chatMemory === "custom" ? { from: Store.stat
                     const isRepeat = item.repeat && item.repeat !== "none";
                     Store.removeSchedule(item.id);
                     results.push(isRepeat ? `已删除「${item.title}」（重复日程，整个系列一并移除）` : `已删除「${item.title}」`);
+                    undoableToast(`已删除「${item.title}」${isRepeat ? "（重复系列）" : ""}`, "warn", { kind: "remove", item: JSON.parse(JSON.stringify(item)) });
                   } else results.push(`没找到「${t}」`);
                 } else if (op.type === "done") {
                   if (item) {
+                    const before = JSON.parse(JSON.stringify(item));
                     Store.toggleSchedule(item.id, date || item.date);
                     results.push(`已把「${item.title}」标记为${isDone(item) ? "未完成" : "已完成"}${date ? `（${date}）` : ""}`);
+                    undoableToast(`已把「${item.title}」标记为${isDone(item) ? "未完成" : "已完成"}`, "ok", {
+                      kind: "patch",
+                      id: item.id,
+                      before: { isCompleted: before.isCompleted, doneAt: before.doneAt, doneAtMap: before.doneAtMap, doneDates: before.doneDates },
+                    });
                   } else results.push(`没找到「${t}」`);
                 } else if (op.type === "move") {
                   const ns = normTime(op.startTime);
@@ -4340,8 +4456,14 @@ ${scheduleContext(Store.state.prefs.chatMemory === "custom" ? { from: Store.stat
                     const patch = { startTime: ns, endTime: ne };
                     // 支持一并改日期（仅非重复日程）
                     if (date && (!item.repeat || item.repeat === "none")) patch.date = date;
+                    const before = JSON.parse(JSON.stringify(item));
                     Store.updateSchedule(item.id, patch);
                     results.push(`已把「${item.title}」改到 ${ns}~${ne}（保持原时长）${date ? `，日期改为 ${date}` : ""}`);
+                    undoableToast(`已把「${item.title}」改到 ${ns}~${ne}`, "ok", {
+                      kind: "patch",
+                      id: item.id,
+                      before: { startTime: before.startTime, endTime: before.endTime, date: before.date },
+                    });
                   } else results.push(`没找到「${t}」或新时间无效`);
                 } else if (op.type === "rename") {
                   const nt = op.newTitle ? String(op.newTitle).trim().slice(0, 30) : "";
@@ -4540,6 +4662,7 @@ ${scheduleContext(Store.state.prefs.chatMemory === "custom" ? { from: Store.stat
       const item = (date ? matches.find((i) => (i.date || "") === date) : null) || (matches.length === 1 ? matches[0] : null);
       if (item) {
         const removed = Store.removeSchedule(item.id);
+        undoableToast(`已删除「${removed.title}」`, "warn", { kind: "remove", item: JSON.parse(JSON.stringify(removed)) });
         return mkMsg("text", `已删除日程「${removed.title}」${dateHint}（${removed.startTime}~${removed.endTime}）。`);
       }
       if (matches.length > 1)
@@ -4564,7 +4687,13 @@ ${scheduleContext(Store.state.prefs.chatMemory === "custom" ? { from: Store.stat
       const name = lower.replace(/^(把|让|请|帮)?(我)?(完成|打卡|搞定|做完)/, "").replace(/[。.，,吗？?\s]/g, "").trim();
       const item = Store.state.schedule.find((i) => i.title.includes(name) || name.includes(i.title));
       if (item) {
+        const before = JSON.parse(JSON.stringify(item));
         Store.toggleSchedule(item.id, item.date);
+        undoableToast(`已把「${item.title}」标记为${isDone(item) ? "未完成" : "已完成"}`, "ok", {
+          kind: "patch",
+          id: item.id,
+          before: { isCompleted: before.isCompleted, doneAt: before.doneAt, doneAtMap: before.doneAtMap, doneDates: before.doneDates },
+        });
         return mkMsg("text", `已为你把「${item.title}」标记为${isDone(item) ? "未完成" : "已完成"} ✅`);
       }
       return mkMsg("text", "没找到对应日程，告诉我是哪一项完成啦？");
@@ -4695,11 +4824,32 @@ ${scheduleContext(Store.state.prefs.chatMemory === "custom" ? { from: Store.stat
         const ns = `${pad(t.hour)}:${pad(t.minute)}`;
         const endMin = t.hour * 60 + t.minute + durMin;
         const ne = `${pad(Math.floor(endMin / 60) % 24)}:${pad(endMin % 60)}`;
+        const before = JSON.parse(JSON.stringify(item));
         Store.updateSchedule(item.id, { startTime: ns, endTime: ne });
+        undoableToast(`已把「${item.title}」改到 ${ns}~${ne}`, "ok", {
+          kind: "patch",
+          id: item.id,
+          before: { startTime: before.startTime, endTime: before.endTime, date: before.date },
+        });
         return mkMsg("text", `已把「${item.title}」从 ${item.startTime}~${item.endTime} 改到 ${ns}~${ne}（保持原时长）。`);
       }
     }
     // 新建 / 删除自定义标签（已在上方优先处理，此处为旧兜底占位已移除）
+    // 去重确认（上轮添加撞重复后的回复：仍要 → 添加；否则走解析）
+    if (chatDraft && chatDraft.kind === "dup") {
+      if (/仍要|是的|确认|重复添加|就按这个|就要/.test(lower)) {
+        const t = chatDraft.item;
+        chatDraft = null;
+        const it = Store.addSchedule(Object.assign({}, t));
+        return {
+          type: "card",
+          isUser: false,
+          content: `好的，已为你再安排一次「${t.title}」📌`,
+          cardData: { title: t.title, time: `${t.startTime} ~ ${t.endTime}`, tag: t.tag, color: t.tagColor, date: t.date || todayStr() },
+        };
+      }
+      chatDraft = null; // 用户自己给时间：走下面的添加解析
+    }
     // 冲突方案选择（上轮添加撞车后的回复：方案A/B/C 或 自己给新时间）
     if (chatDraft && chatDraft.kind === "conflict") {
       const { det, di } = chatDraft;
@@ -4732,6 +4882,13 @@ ${scheduleContext(Store.state.prefs.chatMemory === "custom" ? { from: Store.stat
         chatDraft = { kind: "conflict", det, di: 0 };
         const planLines = plans.map((p, i) => `方案${"ABC"[i]}：${p.desc}`).join("\n");
         return mkMsg("text", `「${t.title}」的 ${t.startTime}~${t.endTime} 和「${det[0].conflicts.map((c) => c.title).join("、")}」时间重叠了 ⚠️\n\n${planLines}\n\n回复「方案A / 方案B / 方案C」让我处理，或直接告诉我新的时间（如「改为 18 点一小时」）。`);
+      }
+      // 去重防护：同日同名 → 先询问
+      const dupes = findDupes(t);
+      if (dupes.length) {
+        const d0 = dupes[0];
+        chatDraft = { kind: "dup", item: t };
+        return mkMsg("text", `今天已经有「${t.title}」（${d0.startTime}~${d0.endTime}）啦 ⚠️\n\n回复「仍要」确认再排一次，或告诉我新的时间。`);
       }
       const it = Store.addSchedule({
         title: t.title,
@@ -4870,10 +5027,20 @@ ${scheduleContext(Store.state.prefs.chatMemory === "custom" ? { from: Store.stat
       case "confirm-add":
         confirmAdd();
         break;
-      case "toggle":
+      case "toggle": {
+        const bf = JSON.parse(JSON.stringify(Store.state.schedule.find((x) => x.id === id) || {}));
         Store.toggleSchedule(id, date);
+        haptic(30);
         renderCurrent();
+        const nx = Store.state.schedule.find((x) => x.id === id);
+        const dNow = nx && (nx.repeat && nx.repeat !== "none" ? (nx.doneDates || []).indexOf(date) >= 0 : !!nx.isCompleted);
+        undoableToast(dNow ? `已完成「${nx ? nx.title : ""}」` : `已取消「${nx ? nx.title : ""}」的完成`, "ok", {
+          kind: "patch",
+          id,
+          before: { isCompleted: bf.isCompleted, doneAt: bf.doneAt, doneAtMap: bf.doneAtMap, doneDates: bf.doneDates },
+        });
         break;
+      }
       case "del": {
         const it = Store.state.schedule.find((x) => x.id === id);
         if (it && it.repeat && it.repeat !== "none") {
@@ -5017,11 +5184,12 @@ ${scheduleContext(Store.state.prefs.chatMemory === "custom" ? { from: Store.stat
   function deleteWithUndo(id) {
     const removed = Store.removeSchedule(id);
     if (!removed) return;
+    haptic(20);
     renderCurrent();
     toast(`已删除「${removed.title}」`, "warn", {
       label: "撤销",
       onClick: () => {
-        Store.addSchedule(Object.assign({}, removed, { id: uid(), isFresh: false }));
+        Store.addSchedule(removed); // 保留原 id，完整还原（含 doneAt/优先级等）
         renderCurrent();
         toast("已恢复", "ok");
       },
