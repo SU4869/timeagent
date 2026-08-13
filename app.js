@@ -3303,16 +3303,16 @@
           new Notification("TimeAgent 日程提醒", { body: msg });
         } catch (e) {}
       }
-      // 提醒统一进对话舱：已打开直接插入 AI 消息；未打开 toast 带「查看」按钮进入后可见
+      // 提醒统一进对话舱：无论是否打开都写入历史（toast 一闪而过也不丢）
       const chatMsg = msg + personaFlavor();
+      proactiveChatPush(chatMsg);
       if (document.getElementById("chatLayer")) {
-        proactiveChatPush(chatMsg);
+        // 已打开：proactiveChatPush 已渲染
       } else {
         toast(msg, "ok", {
           label: "查看",
           onClick: () => {
-            openChat();
-            setTimeout(() => proactiveChatPush(chatMsg), 200);
+            openChat(); // 历史已落库，openChat 会渲染全部历史
           },
         });
       }
@@ -3493,13 +3493,15 @@
     return null;
   }
   function proactiveChatPush(text, type) {
-    const layer = document.getElementById("chatLayer");
-    const list = layer && layer.querySelector("#chatList");
-    if (!list) return false;
+    // 无论对话舱是否打开都写入历史（持久化），避免 toast 一闪而过用户错过；
+    // 打开时才渲染到当前列表（openChat 打开时会渲染全部历史）。
     const m = mkMsg("text", text, null, "offline");
     if (type) m.fb = type; // 带反馈按钮（nudge/comment/question）
     Store.state.chat.push(m);
     Store.save();
+    const layer = document.getElementById("chatLayer");
+    const list = layer && layer.querySelector("#chatList");
+    if (!list) return false; // 未打开：仅落库，下次打开可见
     list.appendChild(chatBubble(m));
     list.scrollTop = list.scrollHeight;
     return true;
@@ -3518,13 +3520,13 @@
     if (document.getElementById("chatLayer")) {
       proactiveChatPush(text, hit.type);
     } else {
+      proactiveChatPush(text, hit.type); // 先落库（toast 一闪而过也不丢，打开对话舱可见）
       toast(`AI 主动提醒：${hit.text}`, hit.tone === "warn" ? "warn" : "ok", [
         ...fbActions,
         {
           label: "去看看",
           onClick: () => {
-            openChat();
-            setTimeout(() => proactiveChatPush(text, hit.type), 200);
+            openChat(); // 历史已落库，openChat 会渲染全部历史
           },
         },
       ]);
