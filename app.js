@@ -4154,7 +4154,8 @@ ${scheduleContext(Store.state.prefs.chatMemory === "custom" ? { from: Store.stat
 规则：时间用 24 小时制；tag 只能从 [学习,工作,运动,饮食,休息,社交,其他] 中选一个；结束时间未说则按常见时长合理推断；日期默认今天，用户说"明天/后天"要换算成具体日期；若新任务与上面已有日程时间重叠，请自动微调 15-30 分钟避开冲突。没有排期需求时不要输出【排期】标记。
 若用户要求删除/标记完成/改期已有日程，则在回复末尾单独输出一行：
 【操作】{"type":"delete|done|move|rename|retag|prio|classify|tag-add|tag-del","title":"日程名或标签名","newTitle":"新名称(仅rename)","tag":"新标签(仅retag)","priority":"高|中|低(仅prio)","cat":"学习|工作|运动|饮食|休息|社交|其他(仅classify)","date":"YYYY-MM-DD(可选,精确匹配某天)","startTime":"HH:MM(仅move需要)"}【/操作】
-（delete=删除，done=打卡完成，move=改期需给新 startTime（可加 date 一起改日期），rename=改名称需给 newTitle，retag=改标签需给 tag，prio=改优先级需给 priority，classify=把自定义标签归类到正经大类需给 cat（内置大类无需归类）；tag-add=新建自定义标签（title 为标签名），tag-del=删除自定义标签（内置分类不能删）；按上面日程中的标题匹配，同名日程可用 date 精确到某天；重复日程删除默认删整个系列并告知用户；【操作】与【排期】不要同时输出，没有匹配的日程时也要输出该行并在正文说明）。`,
+（delete=删除，done=打卡完成，move=改期需给新 startTime（可加 date 一起改日期），rename=改名称需给 newTitle，retag=改标签需给 tag，prio=改优先级需给 priority，classify=把自定义标签归类到正经大类需给 cat（内置大类无需归类）；tag-add=新建自定义标签（title 为标签名），tag-del=删除自定义标签（内置分类不能删）；按上面日程中的标题匹配，同名日程可用 date 精确到某天；重复日程删除默认删整个系列并告知用户；【操作】与【排期】不要同时输出，没有匹配的日程时也要输出该行并在正文说明）。
+【硬性要求】只要用户要求对已有日程做任何修改（改名/改标签/改优先级/删除/打卡/改期/归类），你就必须输出【操作】标记行，绝对不能只在正文里口头说"已改好/已删除/已完成"而不输出标记——没有标记前端就不会真正执行，等于没改。正文可以先说一句确认，但标记必须带。`,
                 },
                 ...history,
                 { role: "user", content: text },
@@ -4342,6 +4343,13 @@ ${scheduleContext(Store.state.prefs.chatMemory === "custom" ? { from: Store.stat
               pushMsg(mkMsg("text", results.join("\n"), null, "ai"));
               toast("已按你的指令更新日程 ✅", "ok");
               renderCurrent();
+              return;
+            }
+            // 无【操作】标记：检查正文是否声称已修改/已删除/已完成（模型幻觉时前端未执行，需明确告知用户）
+            const claim = replyText.match(/(?:已(?:经|帮你|为您)?(?:把|给|将)?.*?(?:改|删|完成|打卡|设|移))/);
+            if (claim) {
+              pushMsg(mkMsg("text", replyText, null, "ai"));
+              pushMsg(mkMsg("text", "⚠️ 我注意到你的日程似乎没有实际变化——刚才那条只是口头说法，修改并未真正执行。请直接说具体指令，例如：「把晨跑的标签改成中二の修炼」「把会议改到下午3点」「删除健身」", null, "offline"));
               return;
             }
             pushMsg(mkMsg("text", replyText, null, "ai"));
