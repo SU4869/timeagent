@@ -219,7 +219,8 @@
     if (isPm) {
       if (hour === 12) hour = 0;
       else if (hour < 12) hour += 12;
-    } else if (isNoon && hour < 12) hour += 12;
+    }
+    // 中午：不偏移（"中午11点半"=11:30，"中午12点"=12:00；用户已用时段词限定，无需再 +12）
     const valid = hour >= 0 && hour <= 23 && minute >= 0 && minute <= 59;
     return { found: true, valid, hour, minute, raw };
   }
@@ -320,11 +321,15 @@
         .trim();
       title = clean.length > 0 ? (clean.length > 10 ? clean.slice(0, 10) : clean) : `${tag}待办`;
 
-      const t = parseTime(text);
+      // 解析开始时间：先剔除「到X点/至X点」的结束时间片段，避免把结束时间误当开始时间
+      // （例：「读书到中午11点半」→ 只给结束时间，开始时间留空待追问，而不是 start=end 报错）
+      const endFirst = parseEndTime(text, text);
+      const startSearch = endFirst.found && endFirst.raw ? text.replace(endFirst.raw, " ") : text;
+      const t = parseTime(startSearch, detectPeriod(text));
       if (!t.found)
         return {
           tasks: [],
-          question: `好的，我已记下「${title}」（${tag}）。不过还缺少一个具体时间，请告诉我几点？\n例如：「下午3点」或「15:00」。`,
+          question: `好的，我已记下「${title}」（${tag}）。不过还缺少一个开始时间，请告诉我几点开始？\n例如：「下午3点」或「15:00」。`,
           pending: { title, tag, tagColor, date: dateFor },
         };
       if (!t.valid)
