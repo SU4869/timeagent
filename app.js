@@ -1643,6 +1643,10 @@
       ${scopeBar()}
 
       ${quickPlannerBar()}
+      <div class="quick-actions mt1">
+        <button class="chip-btn" data-act="copy-yesterday">${svg("repeat")} 和昨天一样</button>
+        <button class="chip-btn" data-act="open-templates">${svg("folder")} 模板</button>
+      </div>
 
       ${focusBar}
       ${issueBar}
@@ -2164,6 +2168,7 @@
       ${taskList}
       ${catCard}
       ${breakdown}
+      <div class="card"><div class="card-title">${svg("heart")} 习惯热力图</div>${renderHeatmapHTML()}<div class="card-sub mt1">颜色越深代表当天打卡越多；空格子是当天无安排。坚持看得见。</div></div>
     </div>`;
 
     requestAnimationFrame(() => {
@@ -2253,6 +2258,12 @@
           <div class="menu-item" data-act="open-prefs">${svgWrap("brain")}<span>AI 偏好设置</span>${svgWrap("chevron")}</div>
           <div class="divider"></div>
           <div class="menu-item" data-act="open-help">${svgWrap("headphones")}<span>帮助与反馈</span>${svgWrap("chevron")}</div>
+          <div class="divider"></div>
+          <div class="menu-item" data-act="open-onboarding">${svgWrap("bulb")}<span>新手引导</span>${svgWrap("chevron")}</div>
+          <div class="divider"></div>
+          <div class="menu-item" data-act="open-templates">${svgWrap("folder")}<span>日程模板</span>${svgWrap("chevron")}</div>
+          <div class="divider"></div>
+          <div class="menu-item" data-act="open-export">${svgWrap("doc")}<span>导出数据</span>${svgWrap("chevron")}</div>
           <div class="divider"></div>
           <div class="menu-item" data-act="open-backup">${svgWrap("save")}<span>数据备份</span>${svgWrap("chevron")}</div>
           <div class="divider"></div>
@@ -3662,12 +3673,19 @@
     return !!(s && s.l >= 3 && s.l > s.d);
   }
   function typeLabel(t) {
-    return { nudge: "催办", comment: "点评", question: "提问" }[t] || t;
+    return { nudge: "催办", comment: "点评", question: "提问", backup: "备份" }[t] || t;
   }
   function fbAfterText(type, s) {
     if (s.d >= 2 && s.d > s.l) return `记下了，以后这类（${typeLabel(type)}）提醒会少一些～`;
     if (s.l >= 3 && s.l > s.d) return `收到！之后「${typeLabel(type)}」这类提醒会多一些`;
     return "已记录，我会慢慢学着更懂你～";
+  }
+  // 备份提醒是否到期（独立判定，便于测试）：从未备份且有 ≥3 条数据，或超过 30 天未备份
+  function backupRemindDue() {
+    const lb = Store.state.prefs.lastBackupAt;
+    if (!lb) return Store.state.schedule.length >= 3; // 从未备份：有 ≥3 条数据才提醒（空数据不扰）
+    const days = Math.floor((Date.now() - lb) / 86400000);
+    return days >= 30;
   }
   // 主动消息候选：nudge=催办 / comment=日程合理性点评 / question=小提问
   function proactivePick() {
@@ -3743,6 +3761,18 @@
       const nightCnt = Store.state.schedule.filter((i) => parseHM(i.startTime) >= 21).length;
       if (nightCnt >= 3)
         return { type: "question", text: `你好像经常把任务排在深夜，是习惯还是白天没空？可以聊聊怎么调整。`, tone: "info" };
+    }
+    // ④ 备份到期提醒（数据安全优先，独立于三类 mute；三类全 mute 时已在函数开头整体静默）
+    if (!fbMuted("backup") && backupRemindDue()) {
+      const lb = Store.state.prefs.lastBackupAt;
+      const days = lb ? Math.floor((Date.now() - lb) / 86400000) : 9999;
+      return {
+        type: "backup",
+        text: lb
+          ? `距离上次备份已经 ${days} 天了，数据都存在手机本地，记得定期备份防丢失～`
+          : `你已经积累了不少日程数据，建议先导出一份备份（微信 / 网盘），换手机也不怕丢～`,
+        tone: "info",
+      };
     }
     return null;
   }
@@ -4023,6 +4053,7 @@
     if (Array.isArray(data.customTags)) Store.state.customTags = data.customTags;
     if (data.prefs) Store.state.prefs = Object.assign({ defaultView: "day", freshHighlight: true }, data.prefs);
     if (Array.isArray(data.chat)) Store.state.chat = data.chat;
+    Store.state.prefs.lastBackupAt = Date.now();
     Store.notify();
     initReminders();
     renderCurrent();
@@ -4084,6 +4115,7 @@
       try {
         const pwd = body.querySelector("#bkPwd").value;
         const { blob, name } = await buildBackupFile(pwd);
+        try { Store.state.prefs.lastBackupAt = Date.now(); Store.notify(); } catch (e) {}
         const how = shareOrDownload(blob, name);
         body.querySelector("#bkResult").innerHTML = `<div class="bk-ok">✅ 备份已生成（${esc(name)}）</div>
           <div class="card-sub mt1" style="line-height:1.7">${pwd ? "已用口令加密。" : "未加密。"}${how === "share" ? "已弹出分享面板，选「微信文件传输助手」或网盘保存即可。" : "文件已保存到下载目录；想存到微信/网盘，点下面按钮分享。"}</div>
@@ -5221,6 +5253,21 @@ ${scheduleContext(Store.state.prefs.chatMemory === "custom" ? { from: Store.stat
         openPrefs();
         break;
       }
+      case "open-onboarding":
+        openOnboarding();
+        break;
+      case "copy-yesterday": {
+        const r = copyDayToDay(addDays(todayStr(), -1), todayStr());
+        toast(r.added ? `已把昨天的 ${r.added} 项复制到今天${r.skipped ? `，跳过 ${r.skipped} 项重复` : ""}` : `昨天没有可复制的日程${r.skipped ? `（今天已有 ${r.skipped} 项重复）` : ""}`, r.added ? "ok" : "warn");
+        renderCurrent();
+        break;
+      }
+      case "open-templates":
+        openTemplates();
+        break;
+      case "open-export":
+        openExport();
+        break;
       case "placeholder":
         toast(`「${t.dataset.label}」功能即将上线，敬请期待`, "ok");
         break;
@@ -5279,6 +5326,253 @@ ${scheduleContext(Store.state.prefs.chatMemory === "custom" ? { from: Store.stat
     try {
       if (window.AndroidBridge && window.AndroidBridge.setTheme) window.AndroidBridge.setTheme(cur);
     } catch (e) {}
+  }
+
+  /* ============================================================
+     新手引导（onboarding）
+     - 全新用户（无 onboarded 标记 + 无数据）首次启动弹出
+     - 展示三大核心区 + 可选放入示例数据；完播后不再打扰
+     ============================================================ */
+  const ONBOARD_KEY = "timeagent_onboarded";
+  function hasOnboarded() {
+    try { return localStorage.getItem(ONBOARD_KEY) === "1"; } catch (e) { return false; }
+  }
+  function markOnboarded() {
+    try { localStorage.setItem(ONBOARD_KEY, "1"); } catch (e) {}
+  }
+  function seedDemoData() {
+    const t = todayStr();
+    const demo = [
+      { title: "晨间阅读", date: t, startTime: "08:00", endTime: "08:45", tag: "学习", tagColor: "#2563EB", isCompleted: false, repeat: "none", priority: "中" },
+      { title: "专注工作", date: t, startTime: "10:00", endTime: "12:00", tag: "工作", tagColor: "#0891B2", isCompleted: false, repeat: "none", priority: "高" },
+      { title: "傍晚慢跑", date: t, startTime: "18:30", endTime: "19:15", tag: "运动", tagColor: "#EF4444", isCompleted: false, repeat: "none", priority: "中" },
+    ];
+    demo.forEach((d) => Store.addSchedule(d));
+    const goals = Store.state.prefs.goals || [];
+    if (!goals.length) Store.state.prefs.goals = [{ id: uid(), title: "每天阅读", cat: "学习", period: "day", hours: 1 }];
+    Store.notify();
+  }
+  function openOnboarding() {
+    openSheet(
+      `<div class="sheet-head"><div class="h">👋 欢迎使用 TimeAgent</div></div>
+       <div class="ob-body mt2">
+         <div class="ob-feat"><span class="ob-ico">${svg("home")}</span><div><b>今天</b>：一眼看清今日安排、专注时长与 AI 建议</div></div>
+         <div class="ob-feat"><span class="ob-ico">${svg("chat")}</span><div><b>对话舱</b>：用大白话和 AI 说话就能排期、调时间、查进度</div></div>
+         <div class="ob-feat"><span class="ob-ico">${svg("target")}</span><div><b>目标</b>：设定每天/每周投入，AI 帮你盯着完成度</div></div>
+       </div>
+       <div class="card-sub mt2" style="line-height:1.7">数据全部存在你手机本地，不上传任何服务器。建议先放入一份示例数据感受一下～</div>
+       <div class="flex gap1 mt3">
+         <button class="btn ghost flex" id="obSkip" style="flex:1" data-close>直接开始</button>
+         <button class="btn flex" id="obDemo" style="flex:1">放入示例数据</button>
+       </div>
+       <div class="card-sub mt2" style="text-align:center">随时可在「我的 → 新手引导」重新查看</div>`,
+      {
+        onOpen: (el) => {
+          el.querySelector("#obSkip").addEventListener("click", () => { markOnboarded(); });
+          el.querySelector("#obDemo").addEventListener("click", () => {
+            seedDemoData();
+            markOnboarded();
+            closeSheet();
+            renderCurrent();
+            toast("已放入示例数据，试着和 AI 说句话吧～", "ok");
+          });
+        },
+      }
+    );
+  }
+
+  /* ============================================================
+     日程模板（和昨天一样 + 命名模板套用）
+     ============================================================ */
+  function dayItemsOf(dateStr) {
+    return Store.state.schedule
+      .filter((i) => !i.repeat || i.repeat === "none")
+      .filter((i) => (i.date || todayStr()) === dateStr);
+  }
+  function copyDayToDay(fromDate, toDate) {
+    const items = dayItemsOf(fromDate);
+    let added = 0, skipped = 0;
+    items.forEach((it) => {
+      const dup = Store.state.schedule.find((x) => (x.date || todayStr()) === toDate && x.title === it.title && x.startTime === it.startTime);
+      if (dup) { skipped++; return; }
+      const copy = Object.assign({}, it, { id: uid(), date: toDate, isCompleted: false, isFresh: false, doneDates: [], doneAt: null, doneAtMap: null });
+      Store.addSchedule(copy);
+      added++;
+    });
+    Store.notify();
+    return { added, skipped };
+  }
+  function listTemplates() {
+    return Store.state.prefs.templates || [];
+  }
+  function saveTemplate(name, dateStr) {
+    const items = dayItemsOf(dateStr).map((i) => ({
+      title: i.title, startTime: i.startTime, endTime: i.endTime, tag: i.tag, tagColor: i.tagColor, priority: i.priority || "中", desc: i.desc || "",
+    }));
+    if (!Store.state.prefs.templates) Store.state.prefs.templates = [];
+    const tpl = { id: uid(), name, items };
+    Store.state.prefs.templates.push(tpl);
+    Store.notify();
+    return tpl;
+  }
+  // 套用模板：生成目标日期的日程，自动避开已占用时段（冲突则向后顺延 30 分钟找空档）
+  function applyTemplate(tplId, toDate) {
+    const tpl = (Store.state.prefs.templates || []).find((x) => x.id === tplId);
+    if (!tpl) return { added: 0, skipped: 0 };
+    let added = 0, skipped = 0;
+    tpl.items.forEach((it) => {
+      const dur = parseHM(it.endTime) - parseHM(it.startTime);
+      let start = it.startTime, end = it.endTime;
+      let guard = 0;
+      while (guard++ < 48) {
+        const conflict = Store.state.schedule.some((x) => (x.date || todayStr()) === toDate && x.startTime < end && x.endTime > start);
+        if (!conflict) break;
+        const [h, m] = start.split(":").map(Number);
+        let nm = m + 30, nh = h; if (nm >= 60) { nm -= 60; nh += 1; }
+        start = pad(nh) + ":" + pad(nm);
+        const [eh, em] = end.split(":").map(Number);
+        let nem = em + 30, neh = eh; if (nem >= 60) { nem -= 60; neh += 1; }
+        end = pad(neh) + ":" + pad(nem);
+      }
+      const dup = Store.state.schedule.find((x) => (x.date || todayStr()) === toDate && x.title === it.title && x.startTime === start);
+      if (dup) { skipped++; return; }
+      Store.addSchedule({ title: it.title, date: toDate, startTime: start, endTime: end, tag: it.tag, tagColor: it.tagColor, priority: it.priority || "中", desc: it.desc || "", isCompleted: false, repeat: "none" });
+      added++;
+    });
+    Store.notify();
+    return { added, skipped };
+  }
+  function openTemplates() {
+    openSheet(
+      `<div class="sheet-head"><div class="h">日程模板</div><button class="x" data-close>${svg("close")}</button></div>
+       <div class="card-sub">把一组日程存成模板（如「工作日模板」「出差模板」），需要时一键套用，自动避开已占用时段。</div>
+       <div id="tplList" class="mt2"></div>
+       <div class="divider mt3"></div>
+       <div class="card-sub mt2">保存当前「今日」日程为模板：</div>
+       <div class="flex gap1 mt1">
+         <input class="input flex" id="tplName" placeholder="模板名，如 工作日模板" style="flex:1" />
+         <button class="btn" id="tplSave">保存模板</button>
+       </div>`,
+      {
+        onOpen: (el) => {
+          const list = el.querySelector("#tplList");
+          const renderList = () => {
+            const ts = listTemplates();
+            list.innerHTML = ts.length
+              ? ts.map((t) => `<div class="tpl-row"><span class="t-name">${esc(t.name)}</span><span class="t-meta">${t.items.length} 项</span>
+                  <button class="btn sm ghost" data-tpl-apply="${t.id}">套用今日</button>
+                  <button class="btn sm danger ghost" data-tpl-del="${t.id}">删</button></div>`).join("")
+              : `<div class="muted" style="font-size:12.5px">还没有模板，先保存一个吧～</div>`;
+            list.querySelectorAll("[data-tpl-apply]").forEach((b) => b.addEventListener("click", () => {
+              const r = applyTemplate(b.dataset.tplApply, todayStr());
+              const nm = (listTemplates().find((x) => x.id === b.dataset.tplApply) || {}).name || "";
+              toast(`已套用「${nm}」：${r.added} 项，跳过 ${r.skipped} 项冲突`, "ok");
+              closeSheet(); renderCurrent();
+            }));
+            list.querySelectorAll("[data-tpl-del]").forEach((b) => b.addEventListener("click", () => {
+              Store.state.prefs.templates = (Store.state.prefs.templates || []).filter((x) => x.id !== b.dataset.tplDel);
+              Store.notify(); renderList();
+            }));
+          };
+          renderList();
+          el.querySelector("#tplSave").addEventListener("click", () => {
+            const name = el.querySelector("#tplName").value.trim();
+            if (!name) { toast("先给模板起个名字", "warn"); return; }
+            if (!dayItemsOf(todayStr()).length) { toast("今天还没有日程可保存", "warn"); return; }
+            saveTemplate(name, todayStr());
+            el.querySelector("#tplName").value = "";
+            toast(`已保存模板「${name}」`, "ok");
+            renderList();
+          });
+        },
+      }
+    );
+  }
+
+  /* ============================================================
+     数据导出：CSV（Excel 友好）+ iCal(.ics)
+     ============================================================ */
+  function csvCell(v) {
+    const s = String(v == null ? "" : v);
+    return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+  }
+  function toCSV(list) {
+    const head = ["日期", "标题", "开始", "结束", "标签", "优先级", "时长(h)", "已完成"];
+    const rows = list.map((i) => {
+      const dur = parseHM(i.endTime) - parseHM(i.startTime);
+      return [i.date || todayStr(), i.title, i.startTime, i.endTime, i.tag || "", i.priority || "中", dur > 0 ? dur.toFixed(2) : 0, isDone(i) ? "是" : "否"].map(csvCell).join(",");
+    });
+    return "﻿" + head.join(",") + "\n" + rows.join("\n");
+  }
+  function toICS(list) {
+    const lines = ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//TimeAgent//CN", "CALSCALE:GREGORIAN"];
+    list.forEach((i) => {
+      const d = i.date || todayStr();
+      const sd = d.replace(/-/g, "") + "T" + i.startTime.replace(/:/g, "") + "00";
+      const ed = d.replace(/-/g, "") + "T" + i.endTime.replace(/:/g, "") + "00";
+      lines.push("BEGIN:VEVENT", "UID:" + (i.id || uid()) + "@timeagent", "DTSTART:" + sd, "DTEND:" + ed, "SUMMARY:" + (i.title || ""), "CATEGORIES:" + (i.tag || ""), "END:VEVENT");
+    });
+    lines.push("END:VCALENDAR");
+    return lines.join("\r\n");
+  }
+  function downloadCSV() {
+    downloadBlob(new Blob([toCSV(Store.state.schedule)], { type: "text/csv;charset=utf-8" }), `timeagent-${todayStr()}.csv`);
+  }
+  function downloadICS() {
+    downloadBlob(new Blob([toICS(Store.state.schedule)], { type: "text/calendar;charset=utf-8" }), `timeagent-${todayStr()}.ics`);
+  }
+  function openExport() {
+    openSheet(
+      `<div class="sheet-head"><div class="h">导出数据</div><button class="x" data-close>${svg("close")}</button></div>
+       <div class="card-sub mt1" style="line-height:1.7">把全部日程导出，拿到 Excel 做周报分析，或导入系统日历（iOS 日历 / Google Calendar / Outlook）实现跨 App 提醒。</div>
+       <button class="btn block mt2" id="expCsv">${svg("doc")} 导出 CSV（Excel 友好）</button>
+       <button class="btn block soft mt2" id="expIcs">${svg("calendar")} 导出 iCal(.ics)</button>
+       <div class="bk-ok mt2" id="expDone" hidden></div>`,
+      {
+        onOpen: (el) => {
+          el.querySelector("#expCsv").addEventListener("click", () => { downloadCSV(); const d = el.querySelector("#expDone"); d.hidden = false; d.textContent = "✅ CSV 已生成"; });
+          el.querySelector("#expIcs").addEventListener("click", () => { downloadICS(); const d = el.querySelector("#expDone"); d.hidden = false; d.textContent = "✅ iCal 已生成（可导入系统日历）"; });
+        },
+      }
+    );
+  }
+
+  /* ============================================================
+     习惯热力图（类 GitHub 贡献图，按完成项数着色）
+     ============================================================ */
+  function heatmapData(days = 119) {
+    const map = {};
+    Store.state.schedule.forEach((i) => {
+      const d = i.date || todayStr();
+      if (!map[d]) map[d] = { total: 0, done: 0 };
+      map[d].total++;
+      if (isDone(i)) map[d].done++;
+    });
+    const arr = [];
+    for (let i = days - 1; i >= 0; i--) {
+      const d = addDays(todayStr(), -i);
+      const e = map[d] || { total: 0, done: 0 };
+      let level = 0;
+      if (e.total > 0) level = e.done === 0 ? 1 : e.done >= 3 ? 4 : e.done >= 2 ? 3 : 2;
+      arr.push({ date: d, total: e.total, done: e.done, level });
+    }
+    return arr;
+  }
+  function renderHeatmapHTML(days = 119) {
+    const data = heatmapData(days);
+    const cells = data.map((c) => {
+      const wkday = parseDate(c.date).getDay();
+      const tip = `${c.date}：${c.done}/${c.total} 完成`;
+      return `<span class="hm-cell lv${c.level}" data-wk="${wkday}" title="${tip}"></span>`;
+    }).join("");
+    const weeks = Math.ceil(data.length / 7);
+    let streak = 0, maxStreak = 0;
+    data.forEach((c) => { if (c.total > 0) { streak++; maxStreak = Math.max(maxStreak, streak); } else streak = 0; });
+    return `<div class="heatmap">
+        <div class="hm-grid" style="--weeks:${weeks}">${cells}</div>
+        <div class="hm-legend"><span>少</span>${[0, 1, 2, 3, 4].map((l) => `<span class="hm-cell lv${l}"></span>`).join("")}<span>多</span></div>
+        <div class="hm-stat">最长连续记录 <b>${maxStreak}</b> 天</div>
+      </div>`;
   }
 
   /* ============================================================
@@ -5363,6 +5657,14 @@ ${scheduleContext(Store.state.prefs.chatMemory === "custom" ? { from: Store.stat
     Store.subscribe(() => {
       $$(".tab-item", $("#tabbar")).forEach((t, i) => t.classList.toggle("has-badge", i === 0 && hasFresh()));
     });
+    // 新功能测试钩子
+    window.__taOnboard = { openOnboarding, hasOnboarded, seedDemoData };
+    window.__taTpl = { copyDayToDay, saveTemplate, applyTemplate, listTemplates, openTemplates, dayItemsOf };
+    window.__taExport = { toCSV, toICS, downloadCSV, downloadICS, openExport };
+    window.__taHeat = { heatmapData, renderHeatmapHTML };
+    window.__taRemind = { backupRemindDue };
+    // 新手引导：全新用户（无标记 + 无数据）首次启动弹出；已有数据的不打扰（不影响老用户与测试）
+    if (!hasOnboarded() && Store.state.schedule.length === 0) setTimeout(openOnboarding, 350);
   }
 
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", init);
