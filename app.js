@@ -3582,8 +3582,8 @@ ${scheduleContext(Store.state.prefs.chatMemory === "custom" ? { from: Store.stat
 【排期】{"tasks":[{"title":"日程名","startTime":"HH:MM","endTime":"HH:MM","tag":"学习","desc":"可选","date":"YYYY-MM-DD(可选,默认今天)"}]}【/排期】
 规则：时间用 24 小时制；tag 只能从 [学习,工作,运动,饮食,休息,社交,其他] 中选一个；结束时间未说则按常见时长合理推断；日期默认今天，用户说"明天/后天"要换算成具体日期；若新任务与上面已有日程时间重叠，请自动微调 15-30 分钟避开冲突。没有排期需求时不要输出【排期】标记。
 若用户要求删除/标记完成/改期已有日程，则在回复末尾单独输出一行：
-【操作】{"type":"delete|done|move|tag-add|tag-del","title":"日程名或标签名","date":"YYYY-MM-DD(可选,精确匹配某天)","startTime":"HH:MM(仅move需要)"}【/操作】
-（delete=删除，done=打卡完成，move=改期需给新 startTime；tag-add=新建自定义标签（title 为标签名），tag-del=删除自定义标签（内置分类不能删）；按上面日程中的标题匹配，同名日程可用 date 精确到某天；重复日程删除默认删整个系列并告知用户；【操作】与【排期】不要同时输出，没有匹配的日程时也要输出该行并在正文说明）。`,
+【操作】{"type":"delete|done|move|rename|retag|prio|tag-add|tag-del","title":"日程名或标签名","newTitle":"新名称(仅rename)","tag":"新标签(仅retag)","priority":"高|中|低(仅prio)","date":"YYYY-MM-DD(可选,精确匹配某天)","startTime":"HH:MM(仅move需要)"}【/操作】
+（delete=删除，done=打卡完成，move=改期需给新 startTime（可加 date 一起改日期），rename=改名称需给 newTitle，retag=改标签需给 tag，prio=改优先级需给 priority；tag-add=新建自定义标签（title 为标签名），tag-del=删除自定义标签（内置分类不能删）；按上面日程中的标题匹配，同名日程可用 date 精确到某天；重复日程删除默认删整个系列并告知用户；【操作】与【排期】不要同时输出，没有匹配的日程时也要输出该行并在正文说明）。`,
                 },
                 ...history,
                 { role: "user", content: text },
@@ -3686,9 +3686,30 @@ ${scheduleContext(Store.state.prefs.chatMemory === "custom" ? { from: Store.stat
                     const [h, m] = ns.split(":").map(Number);
                     const endMin = h * 60 + m + durMin;
                     const ne = `${pad(Math.floor(endMin / 60) % 24)}:${pad(endMin % 60)}`;
-                    Store.updateSchedule(item.id, { startTime: ns, endTime: ne });
-                    results.push(`已把「${item.title}」改到 ${ns}~${ne}（保持原时长）`);
+                    const patch = { startTime: ns, endTime: ne };
+                    // 支持一并改日期（仅非重复日程）
+                    if (date && (!item.repeat || item.repeat === "none")) patch.date = date;
+                    Store.updateSchedule(item.id, patch);
+                    results.push(`已把「${item.title}」改到 ${ns}~${ne}（保持原时长）${date ? `，日期改为 ${date}` : ""}`);
                   } else results.push(`没找到「${t}」或新时间无效`);
+                } else if (op.type === "rename") {
+                  const nt = op.newTitle ? String(op.newTitle).trim().slice(0, 30) : "";
+                  if (item && nt) {
+                    Store.updateSchedule(item.id, { title: nt });
+                    results.push(`已把「${item.title}」改名为「${nt}」`);
+                  } else results.push(`改名失败：没找到「${t}」或新名称无效`);
+                } else if (op.type === "retag") {
+                  const nt = op.tag ? String(op.tag).trim().slice(0, 8) : "";
+                  if (item && nt) {
+                    Store.updateSchedule(item.id, { tag: nt, tagColor: getColorForTag(nt) });
+                    results.push(`已把「${item.title}」的标签改为「${nt}」`);
+                  } else results.push(`改标签失败：没找到「${t}」或标签无效`);
+                } else if (op.type === "prio") {
+                  const np = ["高", "中", "低"].includes(op.priority) ? op.priority : "";
+                  if (item && np) {
+                    Store.updateSchedule(item.id, { priority: np });
+                    results.push(`已把「${item.title}」的优先级设为「${np}」`);
+                  } else results.push(`改优先级失败：没找到「${t}」或优先级无效`);
                 } else if (op.type === "tag-add") {
                   // Agent 新建自定义标签（自主命名）
                   const name = t;
@@ -3891,6 +3912,30 @@ ${scheduleContext(Store.state.prefs.chatMemory === "custom" ? { from: Store.stat
       }
       if (missed.length) return mkMsg("text", `${missed.length} 项日程已过未打卡：${missed.slice(0, 2).map((i) => "「" + i.title + "」").join("、")}${missed.length > 2 ? " 等" : ""}，记得补一下～`);
       return mkMsg("text", list.length ? "今日安排已全部结束，好好休息，或者规划一下明天的日程～" : "今天还没有日程，要不要现在规划一件小事？");
+    }
+    // 重命名日程
+    const rn = lower.match(/把(.+?)(?:改名为|改名成|重命名(?:成|为))(.+)/);
+    if (rn) {
+      const oldName = rn[1].replace(/[。.，,吗？?\s]/g, "").trim();
+      const newName = rn[2].replace(/[。.，,！!？?\s]/g, "").trim();
+      const item = Store.state.schedule.find((i) => i.title.includes(oldName) || oldName.includes(i.title));
+      if (item && newName) {
+        Store.updateSchedule(item.id, { title: newName.slice(0, 30) });
+        return mkMsg("text", `已把「${item.title}」改名为「${newName}」✅`);
+      }
+      return mkMsg("text", `没找到「${oldName}」或新名称无效。`);
+    }
+    // 改标签 / 分类
+    const rt = lower.match(/把(.+?)(?:的)?(?:标签|分类)(?:改成|换到|变成|改为|设成)\s*(.+)/);
+    if (rt) {
+      const oldName = rt[1].replace(/[。.，,吗？?\s]/g, "").trim();
+      const newTag = rt[2].replace(/[。.，,！!？?\s]/g, "").trim();
+      const item = Store.state.schedule.find((i) => i.title.includes(oldName) || oldName.includes(i.title));
+      if (item && newTag) {
+        Store.updateSchedule(item.id, { tag: newTag.slice(0, 8), tagColor: getColorForTag(newTag) });
+        return mkMsg("text", `已把「${item.title}」的标签改为「${newTag}」🏷️`);
+      }
+      return mkMsg("text", `没找到「${oldName}」或标签名无效。`);
     }
     // 改期 / 挪时间
     if (/把/.test(lower) && /改|挪|移|调到|改到|移到|挪到|提前到|推后到|推迟到/.test(lower)) {
