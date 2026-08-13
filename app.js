@@ -946,6 +946,7 @@
      ============================================================ */
   let toastSeq = 0;
   function toast(msg, type = "ok", action) {
+    const actions = Array.isArray(action) ? action : action ? [action] : [];
     const wrap = $("#toastWrap");
     const id = "t" + toastSeq++;
     const node = document.createElement("div");
@@ -954,21 +955,23 @@
     node.innerHTML =
       (type !== "ok" && type !== "warn" && type !== "err" ? "" : `<span>${svg(type === "ok" ? "check" : type === "warn" ? "bulb" : "close")}</span>`) +
       `<span>${esc(msg)}</span>` +
-      (action ? `<button class="act">${esc(action.label)}</button>` : "");
+      actions.map((a) => `<button class="act">${esc(a.label)}</button>`).join("");
     wrap.appendChild(node);
-    const ttl = action ? 6000 : 2600;
+    const ttl = actions.length ? 6000 : 2600;
     const timer = setTimeout(() => dismiss(), ttl);
     function dismiss() {
       clearTimeout(timer);
       node.classList.add("out");
       setTimeout(() => node.remove(), 300);
     }
-    if (action) {
-      node.querySelector(".act").addEventListener("click", () => {
-        action.onClick && action.onClick();
-        dismiss();
-      });
-    }
+    actions.forEach((a, i) => {
+      const btn = node.querySelectorAll(".act")[i];
+      if (btn)
+        btn.addEventListener("click", () => {
+          a.onClick && a.onClick();
+          dismiss();
+        });
+    });
     // 超过 3 条自动清理最旧
     while (wrap.children.length > 3) wrap.firstChild.remove();
   }
@@ -3613,48 +3616,92 @@
       const raw = JSON.parse(localStorage.getItem(PROACTIVE_KEY) || "{}");
       const n = raw.d === todayStr() ? raw.n || 0 : 0;
       const types = raw.d === todayStr() && Array.isArray(raw.types) ? raw.types : [];
-      if (type && !types.includes(type)) types.push(type);
+      if (type) types.push(type); // 允许重复，用于按类型限次（含 boost 放宽）
       localStorage.setItem(PROACTIVE_KEY, JSON.stringify({ d: todayStr(), n: n + 1, types }));
     } catch (e) {}
   }
-  function proactiveTypeDone(type) {
+  function proactiveTypeCount(type) {
     try {
       const raw = JSON.parse(localStorage.getItem(PROACTIVE_KEY) || "{}");
-      if (raw.d !== todayStr()) return false;
-      return Array.isArray(raw.types) && raw.types.includes(type);
+      if (raw.d !== todayStr() || !Array.isArray(raw.types)) return 0;
+      return raw.types.filter((x) => x === type).length;
     } catch (e) {
-      return false;
+      return 0;
     }
+  }
+  // 按类型每日上限：默认 1 次，被👍≥3 后放宽到 2 次
+  function proactiveTypeCap(type) {
+    return fbBoosted(type) ? 2 : 1;
+  }
+  function proactiveTypeDone(type) {
+    return proactiveTypeCount(type) >= proactiveTypeCap(type);
+  }
+  // —— 主动消息反馈（👍👎 自学习）：👎≥2 暂停该类，👍≥3 提高该类频次 ——
+  const FB_KEY = "timeagent_feedback_v1";
+  function fbGet() {
+    try {
+      return JSON.parse(localStorage.getItem(FB_KEY) || "{}");
+    } catch (e) {
+      return {};
+    }
+  }
+  function fbRecord(type, useful) {
+    const s = fbGet();
+    s[type] = s[type] || { l: 0, d: 0 };
+    if (useful) s[type].l++;
+    else s[type].d++;
+    localStorage.setItem(FB_KEY, JSON.stringify(s));
+    return s[type];
+  }
+  function fbMuted(type) {
+    const s = fbGet()[type];
+    return !!(s && s.d >= 2 && s.d > s.l);
+  }
+  function fbBoosted(type) {
+    const s = fbGet()[type];
+    return !!(s && s.l >= 3 && s.l > s.d);
+  }
+  function typeLabel(t) {
+    return { nudge: "催办", comment: "点评", question: "提问" }[t] || t;
+  }
+  function fbAfterText(type, s) {
+    if (s.d >= 2 && s.d > s.l) return `记下了，以后这类（${typeLabel(type)}）提醒会少一些～`;
+    if (s.l >= 3 && s.l > s.d) return `收到！之后「${typeLabel(type)}」这类提醒会多一些`;
+    return "已记录，我会慢慢学着更懂你～";
   }
   // 主动消息候选：nudge=催办 / comment=日程合理性点评 / question=小提问
   function proactivePick() {
+    // 三类全被👎暂停 → 不再主动打扰
+    if (fbMuted("nudge") && fbMuted("comment") && fbMuted("question")) return null;
     const t = todayStr();
     const nowMin = new Date().getHours() * 60 + new Date().getMinutes();
     const today = scopeItems(Store.state.schedule, { mode: "day", anchor: t });
     if (!today.length) return null;
     const sorted = today.slice().sort((a, b) => (a.startTime || "").localeCompare(b.startTime || ""));
     // ① 催办 nudge
-    const upcoming = sorted.filter((i) => !isDone(i) && toMin(i.startTime) > nowMin);
-    const next = upcoming[0];
-    if (next) {
-      const diff = toMin(next.startTime) - nowMin;
-      if (diff <= 20) return { type: "nudge", text: `还有 ${diff} 分钟就到「${next.title}」了，先准备一下？`, tone: "ok" };
+    if (!fbMuted("nudge")) {
+      const upcoming = sorted.filter((i) => !isDone(i) && toMin(i.startTime) > nowMin);
+      const next = upcoming[0];
+      if (next) {
+        const diff = toMin(next.startTime) - nowMin;
+        if (diff <= 20) return { type: "nudge", text: `还有 ${diff} 分钟就到「${next.title}」了，先准备一下？`, tone: "ok" };
+      }
+      const missed = sorted.filter((i) => !isDone(i) && toMin(i.endTime) < nowMin);
+      if (missed.length && !upcoming.length)
+        return { type: "nudge", text: `「${missed[0].title}」时间已经过了，是忘了打卡还是没来得及？`, tone: "warn" };
+      const miss = {};
+      Store.state.schedule.forEach((i) => {
+        const d = i.date || t;
+        if (!isDone(i) && d >= addDays(t, -3) && d <= t) miss[i.title] = (miss[i.title] || 0) + 1;
+      });
+      const missTop = Object.entries(miss).sort((a, b) => b[1] - a[1])[0];
+      if (missTop && missTop[1] >= 2)
+        return { type: "nudge", text: `「${missTop[0]}」连续 ${missTop[1]} 天没完成，要不要我帮你换个更合适的时间？`, tone: "warn" };
+      if (nowMin > 6 * 60 && sorted.length && sorted.every((i) => isDone(i)))
+        return { type: "nudge", text: `今天的安排全部完成啦，干得漂亮！要不要安排点放松时间？`, tone: "ok" };
     }
-    const missed = sorted.filter((i) => !isDone(i) && toMin(i.endTime) < nowMin);
-    if (missed.length && !upcoming.length)
-      return { type: "nudge", text: `「${missed[0].title}」时间已经过了，是忘了打卡还是没来得及？`, tone: "warn" };
-    const miss = {};
-    Store.state.schedule.forEach((i) => {
-      const d = i.date || t;
-      if (!isDone(i) && d >= addDays(t, -3) && d <= t) miss[i.title] = (miss[i.title] || 0) + 1;
-    });
-    const missTop = Object.entries(miss).sort((a, b) => b[1] - a[1])[0];
-    if (missTop && missTop[1] >= 2)
-      return { type: "nudge", text: `「${missTop[0]}」连续 ${missTop[1]} 天没完成，要不要我帮你换个更合适的时间？`, tone: "warn" };
-    if (nowMin > 6 * 60 && sorted.length && sorted.every((i) => isDone(i)))
-      return { type: "nudge", text: `今天的安排全部完成啦，干得漂亮！要不要安排点放松时间？`, tone: "ok" };
-    // ② 合理性点评 comment（每天 ≤1 次）
-    if (!proactiveTypeDone("comment")) {
+    // ② 合理性点评 comment（每天 ≤1 次，👍 后放宽到 2 次）
+    if (!fbMuted("comment") && !proactiveTypeDone("comment")) {
       const tom = addDays(t, 1);
       const tomItems = scopeItems(Store.state.schedule, { mode: "day", anchor: tom });
       const tomHours = tomItems.reduce((s, i) => s + Math.max(0, parseHM(i.endTime) - parseHM(i.startTime)), 0);
@@ -3683,8 +3730,8 @@
         return { type: "comment", text: `目标「${g0.title}」${g0.period === "day" ? "今天" : "本周"}还差 ${g0.remain} 小时，今天有空闲时段，要不要安排上？`, tone: "info" };
       }
     }
-    // ③ 小提问 question（每天 ≤1 次）
-    if (!proactiveTypeDone("question")) {
+    // ③ 小提问 question（每天 ≤1 次，👍 后放宽到 2 次）
+    if (!fbMuted("question") && !proactiveTypeDone("question")) {
       const freq = {};
       Store.state.schedule.forEach((i) => {
         const d = i.date || t;
@@ -3699,11 +3746,12 @@
     }
     return null;
   }
-  function proactiveChatPush(text, via) {
+  function proactiveChatPush(text, type) {
     const layer = document.getElementById("chatLayer");
     const list = layer && layer.querySelector("#chatList");
     if (!list) return false;
-    const m = mkMsg("text", text, null, via || "offline");
+    const m = mkMsg("text", text, null, "offline");
+    if (type) m.fb = type; // 带反馈按钮（nudge/comment/question）
     Store.state.chat.push(m);
     Store.save();
     list.appendChild(chatBubble(m));
@@ -3717,16 +3765,23 @@
     proactiveLogOnce(hit.type);
     // 无正式前缀，像人一样说话（默认文案已口语化；调教风格时追加轻量装饰）
     const text = hit.text + personaFlavor();
+    const fbActions = [
+      { label: "有用", onClick: () => toast(fbAfterText(hit.type, fbRecord(hit.type, true)), "ok") },
+      { label: "没用", onClick: () => toast(fbAfterText(hit.type, fbRecord(hit.type, false)), "warn") },
+    ];
     if (document.getElementById("chatLayer")) {
-      proactiveChatPush(text);
+      proactiveChatPush(text, hit.type);
     } else {
-      toast(`AI 主动提醒：${hit.text}`, hit.tone === "warn" ? "warn" : "ok", {
-        label: "去看看",
-        onClick: () => {
-          openChat();
-          setTimeout(() => proactiveChatPush(text), 200);
+      toast(`AI 主动提醒：${hit.text}`, hit.tone === "warn" ? "warn" : "ok", [
+        ...fbActions,
+        {
+          label: "去看看",
+          onClick: () => {
+            openChat();
+            setTimeout(() => proactiveChatPush(text, hit.type), 200);
+          },
         },
-      });
+      ]);
       // 系统通知：有权限时后台/锁屏也能看到（仅提醒一次，不重复）
       if ("Notification" in window && Notification.permission === "granted") {
         try {
@@ -4558,9 +4613,17 @@ ${scheduleContext(Store.state.prefs.chatMemory === "custom" ? { from: Store.stat
     } else {
       const isU = m.isUser;
       d.style.cssText = `align-self:${isU ? "flex-end" : "flex-start"};max-width:78%;background:${isU ? "var(--primary)" : "var(--surface-solid)"};color:${isU ? "#fff" : "var(--t1)"};border:1px solid ${isU ? "transparent" : "var(--line)"};border-radius:14px;padding:11px 13px;font-size:14px;line-height:1.6;box-shadow:var(--shadow-sm);white-space:pre-wrap;word-break:break-word`;
-      d.innerHTML = (isU ? "" : srcTag(m.via)) + esc(m.content);
+      d.innerHTML = (isU ? "" : srcTag(m.via)) + esc(m.content) + (m.fb ? fbRow(m.fb) : "");
     }
     return d;
+  }
+
+  // 主动消息反馈按钮行：👍 有用 / 👎 没用（点击后替换为结果提示）
+  function fbRow(type) {
+    return `<div class="fb-row" data-fbtype="${esc(type)}">
+      <button class="fb-btn" data-act="fb" data-type="${esc(type)}" data-v="1">有用</button>
+      <button class="fb-btn" data-act="fb" data-type="${esc(type)}" data-v="0">没用</button>
+    </div>`;
   }
 
   // 智能对话提示：结合用户历史日程本地规则生成（零 token，不调模型）
@@ -4946,6 +5009,15 @@ ${scheduleContext(Store.state.prefs.chatMemory === "custom" ? { from: Store.stat
       case "open-chat":
         openChat();
         break;
+      case "fb": {
+        const type = t.dataset.type;
+        const useful = t.dataset.v === "1";
+        const s = fbRecord(type, useful);
+        const row = t.closest(".fb-row");
+        if (row) row.innerHTML = `<span class="fb-done">已记录，之后${useful ? "会多提醒这类" : "会少提醒这类"}～</span>`;
+        toast(fbAfterText(type, s), useful ? "ok" : "warn");
+        break;
+      }
       case "open-planner":
         openPlanner("");
         break;
@@ -5254,6 +5326,8 @@ ${scheduleContext(Store.state.prefs.chatMemory === "custom" ? { from: Store.stat
     initReminders();
     // AI 主动聊天：启动 15s 后首次检查，之后每 20 分钟一次；回到前台时也检查（暴露给测试/调试）
     window.__taProactive = proactiveFire;
+    // 主动消息反馈测试钩子
+    window.__taFb = { fbMuted, fbBoosted, fbRecord, fbGet, proactivePick, proactiveTypeCap, proactiveTypeDone };
     // 备份编解码测试钩子
     window.__taBk = { buildBackupFile, parseBackupText, applyBackupData, backupPayload };
     setTimeout(proactiveFire, 15 * 1000);
