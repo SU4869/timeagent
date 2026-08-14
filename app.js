@@ -24,6 +24,11 @@
     const d = new Date();
     return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
   };
+  // 实时时间信息（注入 AI prompt）：日期+星期+时分，让模型知道"现在是几点"，日报/复盘更贴合实际
+  const nowInfo = () => {
+    const d = new Date();
+    return `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日 ${weekLabel(d)} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  };
   const weekLabel = (d = new Date()) =>
     ["周日", "周一", "周二", "周三", "周四", "周五", "周六"][d.getDay()];
   const formatTodayLabel = () => {
@@ -2784,7 +2789,7 @@
           const prevRate = prev.totalCount ? Math.round((prev.completedCount / prev.totalCount) * 100) : 0;
           if (apiReady()) {
             const prompt =
-              `请写一份「周复盘」。今天日期：${todayStr()}。\n` +
+              `请写一份「周复盘」。当前时间：${nowInfo()}。\n` +
               `上周 AI 给用户的建议/洞察记录（供回顾是否执行）：\n${lastAdvice}\n\n` +
               `数据对比：上周完成 ${prev.completedCount}/${prev.totalCount}（${prevRate}%）、规划 ${prev.totalHours.toFixed(1)}h；本周完成 ${cur.completedCount}/${cur.totalCount}（${curRate}%）、规划 ${cur.totalHours.toFixed(1)}h。\n` +
               `请输出：① 上周建议的执行情况判断（结合数据）；② 本周相比上周的进步或退步（2 条）；③ 下周 1-2 条具体建议。140 字内，短段落。严禁臆造未列出的数据。`;
@@ -2954,10 +2959,11 @@
               )
               .join("\n");
             const prompt =
-              `请为「${label}」写一份简短温暖的时间日报。今天日期：${todayStr()}。\n` +
+              `请为「${label}」写一份简短温暖的时间日报。当前时间：${nowInfo()}。\n` +
               `关于用户的长期习惯观察（供参考，与下方日程矛盾时以下方日程为准）：${buildUserProfile() || "（历史数据不足）"}\n` +
               `以下是用户「${label}」严格全部 ${scoped.length} 个日程（${withDate ? "日期 " : ""}时间 事项 状态 /分类）：\n${rows || "（该时间段暂无日程）"}\n` +
               `【硬性要求】必须完全基于上述真实日程写作，严禁臆造任何未列出的日程、数字或完成情况；若只有 1 个日程，就围绕这一个事项本身展开，不要谈"多任务协调/分类失衡"。` +
+              `注意当前时刻是 ${nowInfo()}，请据此判断哪些日程已完成/进行中/未开始，措辞贴合时间段（如傍晚别写"清晨好"），不要臆造未完成的日程为已完成。\n` +
               `用户的自定义标签可能是个性化/趣味命名，请依据日程标题理解其真实性质，并按标签所属的正经大类归类分析，不要被标签名字迷惑。\n` +
               `请输出：一句话总评；2-3 条亮点或发现；1 条具体的改进建议。全文 150 字以内，短段落，语气自然，不要用夸张赞美。`;
             callLLM(
@@ -4177,7 +4183,7 @@
               [
                 {
                   role: "system",
-                  content: `你是 TimeAgent 智能时间管家，用简洁友好的中文回答。今天日期：${todayStr()}。${personaPromptLine()}
+                  content: `你是 TimeAgent 智能时间管家，用简洁友好的中文回答。当前时间：${nowInfo()}。${personaPromptLine()}
 你有权查看和操作 app 内全部日程数据（查询任意日期、添加、删除、打卡、改期）。
 注意：用户的自定义标签可能是个性化/趣味命名（如中二风格），请依据日程标题理解其真实性质，并按标签所属的正经大类（学习/工作/运动/饮食/休息/社交/其他）归类分析，不要被标签名字迷惑。
 关于用户的长期习惯观察（供参考，与下方日程矛盾时以下方日程为准）：${buildUserProfile() || "（历史数据不足）"}
