@@ -4215,7 +4215,11 @@ ${scheduleContext(Store.state.prefs.chatMemory === "custom" ? { from: Store.stat
 你可以帮用户添加/删除/打卡日程、查询安排、查询空闲时间，也可以闲聊。若用户要求安排日程（含事项和时间），先给一句简短确认，然后在回复末尾输出一行排期数据：
 【排期】{"tasks":[{"title":"日程名","startTime":"HH:MM","endTime":"HH:MM","tag":"学习","desc":"可选","date":"YYYY-MM-DD(可选,默认今天)"}]}【/排期】
 规则：时间用 24 小时制；tag 只能从 [学习,工作,运动,饮食,休息,社交,其他] 中选一个；结束时间未说则按常见时长合理推断；日期默认今天，用户说"明天/后天"要换算成具体日期；若新任务与上面已有日程时间重叠，请自动微调 15-30 分钟避开冲突。没有排期需求时不要输出【排期】标记。
-【补录】用户可能要求补录过去日期的日程（如被误删、漏记，"补上昨天的XX"、"添加前天下午的会议"、"上周三的课"）——这是正常需求，照常输出【排期】并把 date 换成用户说的过去日期，绝对不要劝阻、拒绝或改成今天。过去日期也能安排。
+【补录】用户说"补录/补上/补一下/补个/添加一下昨天的XX、前天的XX、上周X的XX"等都是【补录】= 重新创建该日程，正常需求，**用【排期】添加（不是【操作】done/打卡！）**。示例对应：
+- "补录昨天9点晨会" → 【排期】{"tasks":[{"title":"晨会","startTime":"09:00","endTime":"10:00","date":"昨天日期"}]}
+- "补上上周三的课" → 【排期】{"tasks":[{"title":"课","startTime":"...","endTime":"...","date":"上周三日期"}]}
+- "添加一下前天下午3点会议" → 【排期】{"tasks":[{"title":"会议","startTime":"15:00","endTime":"16:00","date":"前天日期"}]}
+绝对不要把"补录"理解为"标记完成/打卡"！date 用用户说的过去日期，禁止劝阻、拒绝或偷偷改成今天。
 若用户要求删除/标记完成/改期已有日程，则在回复末尾单独输出一行：
 【操作】{"type":"delete|done|move|rename|retag|prio|classify|tag-add|tag-del|tag-color","title":"日程名或标签名","newTitle":"新名称(仅rename)","tag":"新标签(仅retag)","priority":"高|中|低(仅prio)","cat":"学习|工作|运动|饮食|休息|社交|其他(仅classify)","color":"#RRGGBB(仅tag-add/tag-color)","date":"YYYY-MM-DD(可选,精确匹配某天)","startTime":"HH:MM(仅move需要)"}【/操作】
 （delete=删除，done=打卡完成，move=改期需给新 startTime（可加 date 一起改日期），rename=改名称需给 newTitle，retag=改标签需给 tag，prio=改优先级需给 priority，classify=把自定义标签归类到正经大类需给 cat（内置大类无需归类）；tag-add=新建自定义标签（title 为标签名，可给 color），tag-del=删除自定义标签（内置分类不能删），tag-color=修改自定义标签颜色（title 为标签名，color 为 #RRGGBB；内置分类颜色不可改）；按上面日程中的标题匹配，同名日程可用 date 精确到某天；重复日程删除默认删整个系列并告知用户；【操作】与【排期】不要同时输出，没有匹配的日程时也要输出该行并在正文说明）。
