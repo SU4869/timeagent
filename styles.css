@@ -645,7 +645,13 @@ ul { list-style: none; }
 }
 .sch-time { font-size: 12.5px; font-weight: 800; color: var(--t2); white-space: nowrap; }
 .sch-main { flex: 1; min-width: 0; }
-.sch-title { font-size: 15px; font-weight: 700; }
+.sch-title {
+  font-size: 15px; font-weight: 700;
+  line-height: 1.45;
+  word-break: break-word; overflow-wrap: anywhere;
+  /* 长名称自动换行完整显示；极端超长（>2 行）才省略 */
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
 .sch-title.done { text-decoration: line-through; color: var(--t3); font-weight: 500; }
 .sch-actions { display: flex; gap: 8px; }
 .sch-check { width: 26px; height: 26px; border-radius: 50%; border: 2px solid var(--line-strong); display: flex; align-items: center; justify-content: center; color: transparent; transition: all .2s; flex: 0 0 auto; }
