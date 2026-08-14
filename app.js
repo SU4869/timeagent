@@ -145,6 +145,34 @@
     const br = (r * 299 + g * 587 + b * 114) / 1000;
     return br > 150 ? "#16223A" : "#fff";
   }
+  // 颜色相似度：返回 [0,1]，1=完全相同（RGB 归一化欧氏距离）
+  function colorSimilarity(a, b) {
+    const parse = (hex) => {
+      let h = String(hex || "").replace("#", "");
+      if (h.length === 3) h = h[0] + h[0] + h[1] + h[1] + h[2] + h[2];
+      if (h.length !== 6) return null;
+      return [parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16), parseInt(h.slice(4, 6), 16)];
+    };
+    const pa = parse(a),
+      pb = parse(b);
+    if (!pa || !pb) return 0;
+    const dist = Math.sqrt(pa.reduce((s, v, i) => s + (v - pb[i]) * (v - pb[i]), 0));
+    return Math.max(0, 1 - dist / Math.sqrt(3 * 255 * 255));
+  }
+  // 标签重名/近色检测：返回所有需要提醒的文案（供 agent 与用户共用）
+  // mode: "create"（新建，查重名+近色）/ "recolor"（改色，只查近色）
+  function tagDupeWarnings(name, color, mode) {
+    const warns = [];
+    if (!name) return warns;
+    const tags = allTags();
+    if (mode !== "recolor") {
+      const same = tags.find((t) => t.tag === name);
+      if (same) warns.push(`标签「${name}」已存在，无需重复创建`);
+    }
+    const near = tags.filter((t) => t.tag !== name && colorSimilarity(t.color, color) > 0.88);
+    near.forEach((t) => warns.push(`标签「${t.tag}」的颜色与「${name}」的 ${color} 很接近（${t.color}），区分度不高，建议换个颜色`));
+    return warns;
+  }
 
   /* ============================================================
      时间自然语言解析（移植并增强自参考项目）
@@ -2583,11 +2611,17 @@
               return;
             }
             const color = TAG_PALETTE[(Object.keys(TAG_MAP).length + Store.state.customTags.length) % TAG_PALETTE.length];
+            // 近色检测：新标签颜色与已有标签太接近时提醒（主动 agent 精神）
+            const near = allTags().filter((t) => colorSimilarity(t.color, color) > 0.88);
             Store.state.customTags.push({ tag: name, color });
             Store.notify();
             closeSheet();
             openCatMan();
-            toast(`已创建标签「${name}」✨`, "ok");
+            if (near.length) {
+              toast(`已创建「${name}」✨ 注意：「${near[0].tag}」的颜色很接近，建议改个更易区分的颜色`, "warn");
+            } else {
+              toast(`已创建标签「${name}」✨`, "ok");
+            }
           });
           el.querySelector("#catNewName").addEventListener("keydown", (e) => {
             if (e.key === "Enter") el.querySelector("#catNewAdd").click();
@@ -4153,10 +4187,11 @@ ${scheduleContext(Store.state.prefs.chatMemory === "custom" ? { from: Store.stat
 【排期】{"tasks":[{"title":"日程名","startTime":"HH:MM","endTime":"HH:MM","tag":"学习","desc":"可选","date":"YYYY-MM-DD(可选,默认今天)"}]}【/排期】
 规则：时间用 24 小时制；tag 只能从 [学习,工作,运动,饮食,休息,社交,其他] 中选一个；结束时间未说则按常见时长合理推断；日期默认今天，用户说"明天/后天"要换算成具体日期；若新任务与上面已有日程时间重叠，请自动微调 15-30 分钟避开冲突。没有排期需求时不要输出【排期】标记。
 若用户要求删除/标记完成/改期已有日程，则在回复末尾单独输出一行：
-【操作】{"type":"delete|done|move|rename|retag|prio|classify|tag-add|tag-del","title":"日程名或标签名","newTitle":"新名称(仅rename)","tag":"新标签(仅retag)","priority":"高|中|低(仅prio)","cat":"学习|工作|运动|饮食|休息|社交|其他(仅classify)","date":"YYYY-MM-DD(可选,精确匹配某天)","startTime":"HH:MM(仅move需要)"}【/操作】
-（delete=删除，done=打卡完成，move=改期需给新 startTime（可加 date 一起改日期），rename=改名称需给 newTitle，retag=改标签需给 tag，prio=改优先级需给 priority，classify=把自定义标签归类到正经大类需给 cat（内置大类无需归类）；tag-add=新建自定义标签（title 为标签名），tag-del=删除自定义标签（内置分类不能删）；按上面日程中的标题匹配，同名日程可用 date 精确到某天；重复日程删除默认删整个系列并告知用户；【操作】与【排期】不要同时输出，没有匹配的日程时也要输出该行并在正文说明）。
+【操作】{"type":"delete|done|move|rename|retag|prio|classify|tag-add|tag-del|tag-color","title":"日程名或标签名","newTitle":"新名称(仅rename)","tag":"新标签(仅retag)","priority":"高|中|低(仅prio)","cat":"学习|工作|运动|饮食|休息|社交|其他(仅classify)","color":"#RRGGBB(仅tag-add/tag-color)","date":"YYYY-MM-DD(可选,精确匹配某天)","startTime":"HH:MM(仅move需要)"}【/操作】
+（delete=删除，done=打卡完成，move=改期需给新 startTime（可加 date 一起改日期），rename=改名称需给 newTitle，retag=改标签需给 tag，prio=改优先级需给 priority，classify=把自定义标签归类到正经大类需给 cat（内置大类无需归类）；tag-add=新建自定义标签（title 为标签名，可给 color），tag-del=删除自定义标签（内置分类不能删），tag-color=修改自定义标签颜色（title 为标签名，color 为 #RRGGBB；内置分类颜色不可改）；按上面日程中的标题匹配，同名日程可用 date 精确到某天；重复日程删除默认删整个系列并告知用户；【操作】与【排期】不要同时输出，没有匹配的日程时也要输出该行并在正文说明）。
 【硬性要求】只要用户要求对已有日程做任何修改（改名/改标签/改优先级/删除/打卡/改期/归类），你就必须输出【操作】标记行，绝对不能只在正文里口头说"已改好/已删除/已完成"而不输出标记——没有标记前端就不会真正执行，等于没改。正文可以先说一句确认，但标记必须带。
-【追问原则】当用户的指令信息不足、指代不明或可能产生误操作时，先追问澄清再执行，不要猜：①删除/改名/改标签等操作找不到明确对应的日程，列出相近选项让用户选；②用户没说清楚改到什么值（如只说"改一下"没说改成什么）；③多个同名日程需要确认具体哪一个（用日期区分）；④操作有风险（删除/整系列删除）时先确认。追问要具体、给示例，不要空泛地重复问题。只有完全明确时才直接执行。`,
+【追问原则】当用户的指令信息不足、指代不明或可能产生误操作时，先追问澄清再执行，不要猜：①删除/改名/改标签等操作找不到明确对应的日程，列出相近选项让用户选；②用户没说清楚改到什么值（如只说"改一下"没说改成什么）；③多个同名日程需要确认具体哪一个（用日期区分）；④操作有风险（删除/整系列删除）时先确认。追问要具体、给示例，不要空泛地重复问题。只有完全明确时才直接执行。
+【主动告知】你是主动的 agent，发现以下情况要主动提醒用户：①新建/重命名的标签与已有标签重名或名字相似，告知"已存在或很接近"；②标签颜色与已有标签过于接近（区分度低）时提醒换个颜色；③分类自动归类时若标签名很中二/怪异但明显属于某大类，主动说明你的归类理由。`,
                 },
                 ...history,
                 { role: "user", content: text },
@@ -4261,11 +4296,25 @@ ${scheduleContext(Store.state.prefs.chatMemory === "custom" ? { from: Store.stat
                 } else if (op.type === "tag-add") {
                   // Agent 新建自定义标签（自主命名）
                   const name = t;
+                  const wantColor = /^#[0-9a-fA-F]{6}$/.test(op.color || "") ? op.color : "";
+                  const color = wantColor || TAG_PALETTE[(Object.keys(TAG_MAP).length + Store.state.customTags.length) % TAG_PALETTE.length];
                   if (name && !allTags().some((x) => x.tag === name)) {
-                    const color = TAG_PALETTE[(Object.keys(TAG_MAP).length + Store.state.customTags.length) % TAG_PALETTE.length];
                     Store.state.customTags.push({ tag: name, color });
-                    results.push(`已创建标签「${name}」`);
+                    const warns = tagDupeWarnings(name, color, "create");
+                    results.push(`已创建标签「${name}」${warns.length ? "\n" + warns.join("\n") : ""}`);
                   } else results.push(`标签「${name}」已存在或名称无效`);
+                } else if (op.type === "tag-color") {
+                  // Agent 修改自定义标签颜色
+                  const name = t;
+                  const nc = /^#[0-9a-fA-F]{6}$/.test(op.color || "") ? op.color : "";
+                  const ct = Store.state.customTags.find((x) => x.tag === name);
+                  if (ct && nc) {
+                    const warns = tagDupeWarnings(name, nc, "recolor");
+                    ct.color = nc;
+                    Store.notify();
+                    results.push(`已把标签「${name}」的颜色改为 ${nc}${warns.length ? "\n" + warns.join("\n") : ""}`);
+                  } else if (TAG_MAP[name]) results.push(`「${name}」是内置分类，颜色不可改`);
+                  else results.push(nc ? `没找到自定义标签「${name}」` : "改色失败：缺少颜色 color（#RRGGBB）");
                 } else if (op.type === "tag-del") {
                   const name = t;
                   const def = !!TAG_MAP[name];
@@ -4473,7 +4522,9 @@ ${scheduleContext(Store.state.prefs.chatMemory === "custom" ? { from: Store.stat
       const color = TAG_PALETTE[(Object.keys(TAG_MAP).length + Store.state.customTags.length) % TAG_PALETTE.length];
       Store.state.customTags.push({ tag: name, color });
       Store.notify();
-      return mkMsg("text", `已为你创建标签「${name}」✨ 之后添加日程时就能选它。`);
+      // 主动告知：近色提醒（主动 agent 精神）
+      const near = allTags().filter((t) => t.tag !== name && colorSimilarity(t.color, color) > 0.88);
+      return mkMsg("text", `已为你创建标签「${name}」✨ 之后添加日程时就能选它。${near.length ? `\n小提醒：「${near[0].tag}」的颜色和它很接近，区分度不高，建议换个颜色～` : ""}`);
     }
     if (/删除(标签|分类)|去掉(标签|分类)/.test(lower)) {
       const name = lower.replace(/^(请|帮|我)?(删除|去掉)(标签|分类)/, "").replace(/[。.，,吗？?\s]/g, "").trim();
