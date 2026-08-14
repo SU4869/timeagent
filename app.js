@@ -5092,8 +5092,13 @@ ${scheduleContext(Store.state.prefs.chatMemory === "custom" ? { from: Store.stat
         openOnboarding();
         break;
       case "copy-yesterday": {
-        const r = copyDayToDay(addDays(todayStr(), -1), todayStr());
-        toast(r.added ? `已把昨天的 ${r.added} 项复制到今天${r.skipped ? `，跳过 ${r.skipped} 项重复` : ""}` : `昨天没有可复制的日程${r.skipped ? `（今天已有 ${r.skipped} 项重复）` : ""}`, r.added ? "ok" : "warn");
+        // 跟随当前查看日期：把昨天（查看日的前一天）复制到查看日，而非固定今天
+        const to = scope.mode === "day" ? scope.anchor : todayStr();
+        const from = addDays(to, -1);
+        const r = copyDayToDay(from, to);
+        const toLabel = humanDateLabel(to);
+        const fromLabel = humanDateLabel(from);
+        toast(r.added ? `已把${fromLabel}的 ${r.added} 项复制到${toLabel}${r.skipped ? `，跳过 ${r.skipped} 项重复` : ""}` : `${fromLabel}没有可复制的日程${r.skipped ? `（${toLabel}已有 ${r.skipped} 项重复）` : ""}`, r.added ? "ok" : "warn");
         renderCurrent();
         break;
       }
@@ -5277,13 +5282,17 @@ ${scheduleContext(Store.state.prefs.chatMemory === "custom" ? { from: Store.stat
     Store.notify();
     return { added, skipped };
   }
+  // 模板套用/保存的目标日期：跟随当前查看的日期（day 视图取 anchor；周/月视图按用户可理解的处理当天）
+  function tplTargetDate() {
+    return scope.mode === "day" ? scope.anchor : todayStr();
+  }
   function openTemplates() {
     openSheet(
       `<div class="sheet-head"><div class="h">日程模板</div><button class="x" data-close>${svg("close")}</button></div>
        <div class="card-sub">把一组日程存成模板（如「工作日模板」「出差模板」），需要时一键套用，自动避开已占用时段。</div>
        <div id="tplList" class="mt2"></div>
        <div class="divider mt3"></div>
-       <div class="card-sub mt2">保存当前「今日」日程为模板：</div>
+       <div class="card-sub mt2">保存当前「${scope.mode === "day" ? humanDateLabel(scope.anchor) : "今日"}」日程为模板：</div>
        <div class="flex gap1 mt1">
          <input class="input flex" id="tplName" placeholder="模板名，如 工作日模板" style="flex:1" />
          <button class="btn" id="tplSave">保存模板</button>
@@ -5295,13 +5304,13 @@ ${scheduleContext(Store.state.prefs.chatMemory === "custom" ? { from: Store.stat
             const ts = listTemplates();
             list.innerHTML = ts.length
               ? ts.map((t) => `<div class="tpl-row"><span class="t-name">${esc(t.name)}</span><span class="t-meta">${t.items.length} 项</span>
-                  <button class="btn sm ghost" data-tpl-apply="${t.id}">套用今日</button>
+                  <button class="btn sm ghost" data-tpl-apply="${t.id}">套用${scope.mode === "day" ? humanDateLabel(scope.anchor) : "今日"}</button>
                   <button class="btn sm danger ghost" data-tpl-del="${t.id}">删</button></div>`).join("")
               : `<div class="muted" style="font-size:12.5px">还没有模板，先保存一个吧～</div>`;
             list.querySelectorAll("[data-tpl-apply]").forEach((b) => b.addEventListener("click", () => {
-              const r = applyTemplate(b.dataset.tplApply, todayStr());
+              const r = applyTemplate(b.dataset.tplApply, tplTargetDate());
               const nm = (listTemplates().find((x) => x.id === b.dataset.tplApply) || {}).name || "";
-              toast(`已套用「${nm}」：${r.added} 项，跳过 ${r.skipped} 项冲突`, "ok");
+              toast(`已套用「${nm}」到${scope.mode === "day" ? humanDateLabel(scope.anchor) : "今日"}：${r.added} 项，跳过 ${r.skipped} 项冲突`, "ok");
               closeSheet(); renderCurrent();
             }));
             list.querySelectorAll("[data-tpl-del]").forEach((b) => b.addEventListener("click", () => {
@@ -5313,8 +5322,8 @@ ${scheduleContext(Store.state.prefs.chatMemory === "custom" ? { from: Store.stat
           el.querySelector("#tplSave").addEventListener("click", () => {
             const name = el.querySelector("#tplName").value.trim();
             if (!name) { toast("先给模板起个名字", "warn"); return; }
-            if (!dayItemsOf(todayStr()).length) { toast("今天还没有日程可保存", "warn"); return; }
-            saveTemplate(name, todayStr());
+            if (!dayItemsOf(tplTargetDate()).length) { toast(`${scope.mode === "day" ? humanDateLabel(scope.anchor) : "今天"}还没有日程可保存`, "warn"); return; }
+            saveTemplate(name, tplTargetDate());
             el.querySelector("#tplName").value = "";
             toast(`已保存模板「${name}」`, "ok");
             renderList();
