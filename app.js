@@ -4207,11 +4207,13 @@
                 {
                   role: "system",
                   content: `你是 TimeAgent 智能时间管家，用简洁友好的中文回答。当前时间：${nowInfo()}。${personaPromptLine()}
-你有权查看和操作 app 内全部日程数据（查询任意日期、添加、删除、打卡、改期）。
+你有权查看和操作 app 内全部日程数据（查询任意日期、添加、删除、打卡、改期、改名、改标签、改优先级、改重复、改提醒、改描述、归类、管理标签、改标签颜色）。
 注意：用户的自定义标签可能是个性化/趣味命名（如中二风格），请依据日程标题理解其真实性质，并按标签所属的正经大类（学习/工作/运动/饮食/休息/社交/其他）归类分析，不要被标签名字迷惑。
 关于用户的长期习惯观察（供参考，与下方日程矛盾时以下方日程为准）：${buildUserProfile() || "（历史数据不足）"}
 当前记忆范围：${(Store.state.prefs.chatMemory === "custom" ? `自定义区间 ${Store.state.prefs.chatMemoryFrom}~${Store.state.prefs.chatMemoryTo}` : chatMemoryLabel(Store.state.prefs.chatMemory || "week"))}。范围内真实日程如下（范围外数据当前不可见，用户问到时如实说明，或建议切换记忆范围）：
 ${scheduleContext(Store.state.prefs.chatMemory === "custom" ? { from: Store.state.prefs.chatMemoryFrom, to: Store.state.prefs.chatMemoryTo } : Store.state.prefs.chatMemory || "week")}
+最近你执行过的日程操作记录（用户在对话里提到这些操作时，承认是你做的并说明结果，不要装作不知道）：
+${(Store.state.prefs.recentOps || []).slice(-5).map((r) => `[${r.t}] ${r.log}`).join("\n") || "（暂无操作记录）"}
 你可以帮用户添加/删除/打卡日程、查询安排、查询空闲时间，也可以闲聊。若用户要求安排日程（含事项和时间），先给一句简短确认，然后在回复末尾输出一行排期数据：
 【排期】{"tasks":[{"title":"日程名","startTime":"HH:MM","endTime":"HH:MM","tag":"学习","desc":"可选","date":"YYYY-MM-DD(可选,默认今天)"}]}【/排期】
 规则：时间用 24 小时制；tag 只能从 [学习,工作,运动,饮食,休息,社交,其他] 中选一个；结束时间未说则按常见时长合理推断；日期默认今天，用户说"明天/后天"要换算成具体日期；若新任务与上面已有日程时间重叠，请自动微调 15-30 分钟避开冲突。没有排期需求时不要输出【排期】标记。
@@ -4221,8 +4223,8 @@ ${scheduleContext(Store.state.prefs.chatMemory === "custom" ? { from: Store.stat
 - "添加一下前天下午3点会议" → 【排期】{"tasks":[{"title":"会议","startTime":"15:00","endTime":"16:00","date":"前天日期"}]}
 绝对不要把"补录"理解为"标记完成/打卡"！date 用用户说的过去日期，禁止劝阻、拒绝或偷偷改成今天。
 若用户要求删除/标记完成/改期已有日程，则在回复末尾单独输出一行：
-【操作】{"type":"delete|done|move|rename|retag|prio|classify|tag-add|tag-del|tag-color","title":"日程名或标签名","newTitle":"新名称(仅rename)","tag":"新标签(仅retag)","priority":"高|中|低(仅prio)","cat":"学习|工作|运动|饮食|休息|社交|其他(仅classify)","color":"#RRGGBB(仅tag-add/tag-color)","date":"YYYY-MM-DD(可选,精确匹配某天)","startTime":"HH:MM(仅move需要)"}【/操作】
-（delete=删除，done=打卡完成，move=改期需给新 startTime（可加 date 一起改日期），rename=改名称需给 newTitle，retag=改标签需给 tag，prio=改优先级需给 priority，classify=把自定义标签归类到正经大类需给 cat（内置大类无需归类）；tag-add=新建自定义标签（title 为标签名，可给 color），tag-del=删除自定义标签（内置分类不能删），tag-color=修改自定义标签颜色（title 为标签名，color 为 #RRGGBB；内置分类颜色不可改）；按上面日程中的标题匹配，同名日程可用 date 精确到某天；重复日程删除默认删整个系列并告知用户；【操作】与【排期】不要同时输出，没有匹配的日程时也要输出该行并在正文说明）。
+【操作】{"type":"delete|done|move|rename|retag|prio|repeat|remind|desc|classify|tag-add|tag-del|tag-color","title":"日程名或标签名","newTitle":"新名称(仅rename)","tag":"新标签(仅retag)","priority":"高|中|低(仅prio)","repeat":"none|daily|weekly(仅repeat)","remind":"true/false(仅remind,可带remindOffset)","desc":"新描述(仅desc)","cat":"学习|工作|运动|饮食|休息|社交|其他(仅classify)","color":"#RRGGBB(仅tag-add/tag-color)","date":"YYYY-MM-DD(可选,精确匹配某天)","startTime":"HH:MM(仅move需要)"}【/操作】
+（delete=删除，done=打卡完成，move=改期需给新 startTime（可加 date 一起改日期），rename=改名称需给 newTitle，retag=改标签需给 tag，prio=改优先级需给 priority，repeat=改重复需给 repeat（none/daily/weekly），remind=开提醒给 remind:true（可加 remindOffset 分钟数）关提醒给 remind:false，desc=改描述需给 desc，classify=把自定义标签归类到正经大类需给 cat（内置大类无需归类）；tag-add=新建自定义标签（title 为标签名，可给 color），tag-del=删除自定义标签（内置分类不能删），tag-color=修改自定义标签颜色（title 为标签名，color 为 #RRGGBB；内置分类颜色不可改）；按上面日程中的标题匹配，同名日程可用 date 精确到某天；重复日程删除默认删整个系列并告知用户；【操作】与【排期】不要同时输出，没有匹配的日程时也要输出该行并在正文说明）。
 【硬性要求】只要用户要求对已有日程做任何修改（改名/改标签/改优先级/删除/打卡/改期/归类），你就必须输出【操作】标记行，绝对不能只在正文里口头说"已改好/已删除/已完成"而不输出标记——没有标记前端就不会真正执行，等于没改。正文可以先说一句确认，但标记必须带。
 【追问原则】当用户的指令信息不足、指代不明或可能产生误操作时，先追问澄清再执行，不要猜：①删除/改名/改标签等操作找不到明确对应的日程，列出相近选项让用户选；②用户没说清楚改到什么值（如只说"改一下"没说改成什么）；③多个同名日程需要确认具体哪一个（用日期区分）；④操作有风险（删除/整系列删除）时先确认。追问要具体、给示例，不要空泛地重复问题。只有完全明确时才直接执行。
 【主动告知】你是主动的 agent，发现以下情况要主动提醒用户：①新建/重命名的标签与已有标签重名或名字相似，告知"已存在或很接近"；②标签颜色与已有标签过于接近（区分度低）时提醒换个颜色；③分类自动归类时若标签名很中二/怪异但明显属于某大类，主动说明你的归类理由。`,
@@ -4329,6 +4331,39 @@ ${scheduleContext(Store.state.prefs.chatMemory === "custom" ? { from: Store.stat
                     results.push(`改优先级失败：没找到「${t}」或优先级无效`);
                     notFound.push(t);
                   }
+                } else if (op.type === "repeat") {
+                  // Agent 设置/修改重复周期（none/daily/weekly）
+                  const nr = ["none", "daily", "weekly"].includes(op.repeat) ? op.repeat : "";
+                  if (item && nr) {
+                    Store.updateSchedule(item.id, { repeat: nr });
+                    results.push(`已把「${item.title}」的重复设为「${nr === "none" ? "不重复" : nr === "daily" ? "每天" : "每周"}」`);
+                  } else {
+                    results.push(nr ? `改重复失败：没找到「${t}」` : "改重复失败：repeat 只能为 none/daily/weekly");
+                    notFound.push(t);
+                  }
+                } else if (op.type === "remind") {
+                  // Agent 设置/关闭提醒（remind=true 默认提前10分钟；remindOffset 可选）
+                  const rv = typeof op.remind === "boolean" ? op.remind : null;
+                  if (item && rv !== null) {
+                    const patch = { remind: rv };
+                    const off = parseInt(op.remindOffset, 10);
+                    if (rv && !isNaN(off) && off >= 0) patch.remindOffset = off;
+                    Store.updateSchedule(item.id, patch);
+                    results.push(`已${rv ? "开启" : "关闭"}「${item.title}」的提醒${rv && patch.remindOffset ? `（提前 ${patch.remindOffset} 分钟）` : ""}`);
+                  } else {
+                    results.push(`改提醒失败：没找到「${t}」或 remind 参数无效`);
+                    notFound.push(t);
+                  }
+                } else if (op.type === "desc") {
+                  // Agent 修改描述
+                  const nd = op.desc ? String(op.desc).trim().slice(0, 100) : "";
+                  if (item && nd) {
+                    Store.updateSchedule(item.id, { desc: nd });
+                    results.push(`已更新「${item.title}」的描述`);
+                  } else {
+                    results.push(nd ? `改描述失败：没找到「${t}」` : "改描述失败：缺少 desc");
+                    notFound.push(t);
+                  }
                 } else if (op.type === "tag-add") {
                   // Agent 新建自定义标签（自主命名）
                   const name = t;
@@ -4376,6 +4411,11 @@ ${scheduleContext(Store.state.prefs.chatMemory === "custom" ? { from: Store.stat
               const cleanOps = replyText.replace(/【操作】[\s\S]*?【\/操作】/g, "").trim();
               if (cleanOps) pushMsg(mkMsg("text", cleanOps, null, "ai"));
               pushMsg(mkMsg("text", results.join("\n"), null, "ai"));
+              // 记录最近操作（供 prompt 注入，让 agent 对自己干过的事敏感）
+              if (!Store.state.prefs.recentOps) Store.state.prefs.recentOps = [];
+              Store.state.prefs.recentOps.push({ t: nowInfo(), log: results.slice(0, 3).join("；") });
+              if (Store.state.prefs.recentOps.length > 8) Store.state.prefs.recentOps = Store.state.prefs.recentOps.slice(-8);
+              Store.save();
               // 有匹配失败的指令：列出相近日程候选，引导用户确认（避免"说没找到就完事"）
               if (notFound.length) {
                 const cands = allTitles.filter((ti) => notFound.some((nf) => ti.includes(nf) || nf.includes(ti)));
