@@ -4206,15 +4206,17 @@ ${scheduleContext(Store.state.prefs.chatMemory === "custom" ? { from: Store.stat
             );
             // 解析 AI 操作数据（删除/打卡/改期/改名/改标签等）：优先于【排期】处理，
             // 避免模型同时输出两者时操作被排期分支吞掉（改名失败却弹"添加成功"的根因）
+            // 扫描所有【操作】...【/操作】块（g 标志），合并 ops——AI 有时会输出多个块（每个独立对象）
             const ops = [];
-            const am = replyText.match(/【操作】([\s\S]*?)【\/操作】/);
-            if (am) {
+            const opMatches = replyText.match(/【操作】([\s\S]*?)【\/操作】/g) || [];
+            opMatches.forEach((m) => {
               try {
-                const j = JSON.parse(am[1].trim());
+                const inner = m.replace(/^【操作】/, "").replace(/【\/操作】$/, "").trim();
+                const j = JSON.parse(inner);
                 if (Array.isArray(j)) ops.push(...j);
                 else if (j && j.type) ops.push(j);
               } catch (e) {}
-            }
+            });
             if (ops.length) {
               const results = [];
               const notFound = [];
@@ -4358,36 +4360,39 @@ ${scheduleContext(Store.state.prefs.chatMemory === "custom" ? { from: Store.stat
               renderCurrent();
               return;
             }
-            // 无【操作】标记：尝试解析【排期】添加日程
+            // 无【操作】标记：尝试解析【排期】添加日程（扫描所有块并合并 tasks）
             let tasks = null;
-            const pm = replyText.match(/【排期】([\s\S]*?)【\/排期】/);
-            if (pm) {
+            const pmMatches = replyText.match(/【排期】([\s\S]*?)【\/排期】/g) || [];
+            pmMatches.forEach((m) => {
               try {
-                const j = JSON.parse(pm[1].trim());
+                const inner = m.replace(/^【排期】/, "").replace(/【\/排期】$/, "").trim();
+                const j = JSON.parse(inner);
                 if (Array.isArray(j.tasks) && j.tasks.length) {
-                  tasks = j.tasks
-                    .filter((t) => t && t.title)
-                    .map((t) => {
-                      const startTime = normTime(t.startTime);
-                      const endTime = normTime(t.endTime);
-                      const tag = ["学习", "工作", "运动", "饮食", "休息", "社交", "其他"].includes(t.tag) ? t.tag : "其他";
-                      return {
-                        title: String(t.title).trim().slice(0, 30),
-                        startTime,
-                        endTime,
-                        tag,
-                        tagColor: getColorForTag(tag),
-                        desc: t.desc ? String(t.desc).trim() : "",
-                        priority: ["高", "中", "低"].includes(t.priority) ? t.priority : "中",
-                        date: t.date || todayStr(),
-                      };
-                    });
+                  if (!tasks) tasks = [];
+                  tasks.push(...j.tasks);
                 }
-              } catch (e) {
-                tasks = null;
-              }
+              } catch (e) {}
+            });
+            if (tasks && tasks.length) {
+              tasks = tasks
+                .filter((t) => t && t.title)
+                .map((t) => {
+                  const startTime = normTime(t.startTime);
+                  const endTime = normTime(t.endTime);
+                  const tag = ["学习", "工作", "运动", "饮食", "休息", "社交", "其他"].includes(t.tag) ? t.tag : "其他";
+                  return {
+                    title: String(t.title).trim().slice(0, 30),
+                    startTime,
+                    endTime,
+                    tag,
+                    tagColor: getColorForTag(tag),
+                    desc: t.desc ? String(t.desc).trim() : "",
+                    priority: ["高", "中", "低"].includes(t.priority) ? t.priority : "中",
+                    date: t.date || todayStr(),
+                  };
+                });
             }
-            const cleanText = pm ? replyText.replace(/【排期】[\s\S]*?【\/排期】/g, "").trim() : replyText;
+            const cleanText = pmMatches.length ? replyText.replace(/【排期】[\s\S]*?【\/排期】/g, "").trim() : replyText;
             if (tasks && tasks.length) {
               if (cleanText) pushMsg(mkMsg("text", cleanText, null, "ai"));
               const conflict = checkConflicts(tasks);
