@@ -4925,8 +4925,28 @@ ${(Store.state.prefs.recentOps || []).slice(-5).map((r) => `[${r.t}] ${r.log}`).
       `你是想调整日程吗？我可以帮你：添加（如「加个明早背单词1小时」）、删除（如「删除跑步」）、完成打卡、改期（如「把跑步改到晚上8点」）、查询安排（如「今天有什么安排」）或查询空闲时段。\n\n目前你今天有 ${stats.totalCount} 项安排，已规划 ${stats.totalHours.toFixed(1)} 小时。`
     );
   }
+  // 清除 AI 回复里的 markdown 语法痕迹（**加粗** / `代码` / # 标题 / > 引用等），
+  // 让对话气泡干净自然（用户消息原样保留，不清洗）
+  function cleanMd(s) {
+    if (!s) return s;
+    return s
+      .replace(/\*\*([^*]+)\*\*/g, "$1") // **加粗** → 加粗
+      .replace(/\*([^*]+)\*/g, "$1") // *斜体* → 斜体
+      .replace(/__([^_]+)__/g, "$1") // __下划线__
+      .replace(/`([^`]+)`/g, "$1") // `代码` → 代码
+      .replace(/^#{1,6}\s*/gm, "") // # 标题
+      .replace(/^>\s?/gm, "") // > 引用
+      .replace(/^[-*]\s+/gm, "") // 行首无序列表符（保留文字）
+      .replace(/^\d+[.、]\s*/gm, "") // 行首有序列表符
+      .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1") // [文字](链接) → 文字
+      .replace(/!\[([^\]]*)\]\([^)]*\)/g, "$1")
+      .replace(/~~([^~]+)~~/g, "$1") // ~~删除线~~
+      .trim();
+  }
   function mkMsg(type, content, cardData, via) {
     // via: "ai"=大模型生成 / "offline"=本地规则（缺省按本地，由调用方对 AI 结果显式传 "ai"）
+    // 文本类 AI/本地消息统一清洗 markdown 痕迹（用户消息由调用方传 isUser 且不经过此清洗）
+    if (type === "text") content = cleanMd(content);
     return { type, isUser: false, content, cardData, via: via || "offline" };
   }
 
