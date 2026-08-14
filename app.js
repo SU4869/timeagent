@@ -1852,7 +1852,9 @@
   /* ============================================================
      日程页
      ============================================================ */
-  const schedUI = { open: false, sh: 9, sm: 0, dh: 1, dm: 0, tag: "其他", color: "#A1A1AA", custom: "", title: "", date: todayStr(), priority: "中", repeat: "none" };
+  const schedUI = { open: false, sh: 9, sm: 0, dh: 1, dm: 0, tag: "其他", color: "#A1A1AA", custom: "", title: "", date: todayStr(), priority: "中", repeat: "none", showAll: false };
+  // 大列表分块阈值：超过 60 项时分批渲染 + 「显示全部」（防月视图上百条 DOM 卡顿）
+  const SCHED_BATCH = 60;
 
   function renderSchedule() {
     const scoped = scopeItems(Store.state.schedule, scope);
@@ -1884,22 +1886,29 @@
     const emptyHTML = `<div class="empty">${emptyArt("schedule")}<div class="t">${scope.mode === "day" ? "这一天还没有日程" : "这个" + (scope.mode === "week" ? "周" : "月") + "还没有日程"}</div><div class="s">点击右上角「添加日程」开始规划</div></div>`;
 
     let itemsHTML;
+    // 大列表分块：总条数超阈值且未点「显示全部」时，只渲染前 BATCH 条 + 加载按钮
+    const many = list.length > SCHED_BATCH && !schedUI.showAll;
+    const batchList = many ? list.slice(0, SCHED_BATCH) : list;
     if (scope.mode === "day") {
-      itemsHTML = list.length ? list.map(schItemHTML).join("") : emptyHTML;
+      itemsHTML = batchList.length ? batchList.map(schItemHTML).join("") : emptyHTML;
     } else {
       const groups = groupByDate(scoped);
       itemsHTML = groups.length
         ? groups
             .map(([d, items]) => {
               const its = items.slice().sort((a, b) => a.startTime.localeCompare(b.startTime));
+              // 分组内也遵守分块上限（只作用于命中分块的情况）
+              const vis = many ? its.filter((x) => batchList.some((y) => y.id === x.id)) : its;
+              if (!vis.length) return "";
               return `<div class="day-group">
                 <div class="day-head"><span class="dh-label">${humanDateLabel(d)}</span>
                   <span class="dh-sub">${weekLabel(parseDate(d))} · ${items.length} 项</span></div>
-                ${its.map(schItemHTML).join("")}
+                ${vis.map(schItemHTML).join("")}
               </div>`;
             })
             .join("")
         : emptyHTML;
+      if (many) itemsHTML += `<button class="btn block soft mt2" data-act="sched-show-all">还有 ${list.length - SCHED_BATCH} 项未显示 · 点击显示全部</button>`;
     }
 
     const titleMap = { day: scope.anchor === todayStr() ? "今日日程" : "日程", week: "本周日程", month: "本月日程" };
@@ -3469,7 +3478,7 @@
     const lb = Store.state.prefs.lastBackupAt;
     if (!lb) return Store.state.schedule.length >= 3; // 从未备份：有 ≥3 条数据才提醒（空数据不扰）
     const days = Math.floor((Date.now() - lb) / 86400000);
-    return days >= 30;
+    return days >= 7; // 每周提醒一次备份（数据安全优先）
   }
   // 主动消息候选：nudge=催办 / comment=日程合理性点评 / question=小提问
   function proactivePick() {
@@ -3576,6 +3585,9 @@
   }
   function proactiveFire() {
     if (proactiveTodayCount() >= 4) return;
+    // 深夜免打扰：22:00~8:00 不主动说话（用户可能在休息）
+    const h = new Date().getHours();
+    if (h >= 22 || h < 8) return;
     const hit = proactivePick();
     if (!hit) return;
     proactiveLogOnce(hit.type);
@@ -3865,11 +3877,25 @@
     const n = Store.state.schedule.length;
     body.innerHTML = `
       <div class="bk-tip" style="line-height:1.7">📱 换手机 / 清缓存 / 卸载前，先「导出备份」存到微信或网盘；新手机装好 App 后「导入备份」一键恢复全部数据（含人格、目标、统计）。</div>
-      <button class="btn block mt2" id="bkExportStart">${svg("save")} 导出备份</button>
+      <button class="btn block mt2" id="bkQuickExport">${svg("save")} 一键导出（免加密，直接出文件）</button>
+      <button class="btn block soft mt2" id="bkExportStart">${svg("key")} 自定义加密导出</button>
       <button class="btn block soft mt2" id="bkImportStart">${svg("folder")} 导入备份</button>
       <div class="divider"></div>
       <div class="card-sub muted">当前 ${n} 条日程。旧版 .json 备份同样可以导入。</div>
       <button class="btn block ghost danger mt2" id="bkClear">${svg("trash")} 清空全部日程</button>`;
+    body.querySelector("#bkQuickExport").addEventListener("click", () => {
+      // 一键导出：免口令直接出文件（分享或下载），适合快速发到微信/网盘
+      const blob = new Blob([JSON.stringify(backupPayload())], { type: "application/json" });
+      const name = `TimeAgent备份-${todayStr()}.json`;
+      if (navigator.share && navigator.canShare && navigator.canShare({ files: [new File([blob], name, { type: "application/json" })] })) {
+        navigator.share({ files: [new File([blob], name, { type: "application/json" })] }).catch(() => {});
+      } else {
+        downloadBlob(blob, name);
+      }
+      Store.state.prefs.lastBackupAt = Date.now();
+      Store.save();
+      toast("备份已导出（未加密）✅", "ok");
+    });
     body.querySelector("#bkExportStart").addEventListener("click", () => bkRenderExport(body));
     body.querySelector("#bkImportStart").addEventListener("click", () => bkRenderImport(body));
     body.querySelector("#bkClear").addEventListener("click", () => {
@@ -4683,6 +4709,30 @@ ${(Store.state.prefs.recentOps || []).slice(-5).map((r) => `[${r.t}] ${r.log}`).
       return mkMsg("text", `你目前已规划 ${stats.totalHours.toFixed(1)} 小时，共 ${total} 项，完成 ${done} 项，效率评分 ${stats.efficiency} 分。${praise}`);
     }
     // 完成 / 打卡
+    // 忘打卡 / 补打卡 / 哪些没完成：列出过期未完成项，附「全部补上」按钮
+    if (/忘.?打卡|补.?打卡|没.?完成|没.?打卡|哪些.*(没|未).*(做|完成|打卡)|漏/.test(lower)) {
+      const t = todayStr();
+      const nowMin = new Date().getHours() * 60 + new Date().getMinutes();
+      const overdue = Store.state.schedule
+        .filter((i) => (i.date || t) === t && !isDone(i) && toMin(i.endTime) < nowMin)
+        .sort((a, b) => (a.startTime || "").localeCompare(b.startTime || ""));
+      if (!overdue.length) return mkMsg("text", "今天没有过期未打卡的日程，都搞定啦 👍");
+      return mkMsg("text", `今天有 ${overdue.length} 项已过未打卡：\n${overdue.map((i) => `「${i.title}」${i.startTime}-${i.endTime}`).join("\n")}\n要现在全部补上吗？回复「全部打卡」即可。`);
+    }
+    // 全部补打卡
+    if (/全部打卡|全补|都打卡|全部补上/.test(lower)) {
+      const t = todayStr();
+      const nowMin = new Date().getHours() * 60 + new Date().getMinutes();
+      const overdue = Store.state.schedule
+        .filter((i) => (i.date || t) === t && !isDone(i) && toMin(i.endTime) < nowMin)
+        .sort((a, b) => (a.startTime || "").localeCompare(b.startTime || ""));
+      if (!overdue.length) return mkMsg("text", "今天没有过期未打卡的日程～");
+      overdue.forEach((i) => {
+        Store.toggleSchedule(i.id, i.date);
+      });
+      undoableToast(`已补打卡 ${overdue.length} 项过期日程`, "ok", { kind: "patch", id: overdue[0].id, before: { isCompleted: false } });
+      return mkMsg("text", `已为你把 ${overdue.length} 项过期日程全部补上打卡 ✅：${overdue.map((i) => `「${i.title}」`).join("、")}`);
+    }
     if (/完成|打卡|搞定|做完/.test(lower)) {
       const name = lower.replace(/^(把|让|请|帮)?(我)?(完成|打卡|搞定|做完)/, "").replace(/[。.，,吗？?\s]/g, "").trim();
       const item = Store.state.schedule.find((i) => i.title.includes(name) || name.includes(i.title));
@@ -5027,11 +5077,17 @@ ${(Store.state.prefs.recentOps || []).slice(-5).map((r) => `[${r.t}] ${r.log}`).
         if (scope.mode === "day") scope.anchor = addDays(scope.anchor, dir);
         else if (scope.mode === "week") scope.anchor = addDays(scope.anchor, dir * 7);
         else scope.anchor = shiftMonth(scope.anchor, dir);
+        schedUI.showAll = false; // 切换视图复位分块状态
         renderCurrent();
         break;
       }
       case "toggle-form":
         schedUI.open = !schedUI.open;
+        renderSchedule();
+        break;
+      case "sched-show-all":
+        // 大列表分块：显示全部（切换视图后自动复位为分块状态）
+        schedUI.showAll = true;
         renderSchedule();
         break;
       case "step": {
