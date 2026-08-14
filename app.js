@@ -501,6 +501,15 @@
       this.subs.push(fn);
     },
     addSchedule(item) {
+      // 兜底防线：拒绝非法时间（小时 ≥24 / 格式错），杜绝"25点/26点"日程（此前模板顺延会生成）
+      if (item && item.startTime && !isTimeValid(item.startTime)) {
+        console.warn("addSchedule 拦截非法开始时间：", item.startTime, item.title);
+        return null;
+      }
+      if (item && item.endTime && !isTimeValid(item.endTime)) {
+        console.warn("addSchedule 拦截非法结束时间：", item.endTime, item.title);
+        return null;
+      }
       const it = Object.assign(
         { id: uid(), isCompleted: false, date: todayStr(), isFresh: false, desc: "", repeat: "none", remind: false, remindOffset: 10, doneDates: [], priority: "中", doneAt: null, doneAtMap: null },
         item
@@ -5261,31 +5270,35 @@ ${scheduleContext(Store.state.prefs.chatMemory === "custom" ? { from: Store.stat
     return tpl;
   }
   // 套用模板：生成目标日期的日程，自动避开已占用时段（冲突则向后顺延 30 分钟找空档）
+  // 防 25 点/26 点 bug：顺延超出当天 23:59 时停止，标记为放不下（建议顺延到明天）
   function applyTemplate(tplId, toDate) {
     const tpl = (Store.state.prefs.templates || []).find((x) => x.id === tplId);
     if (!tpl) return { added: 0, skipped: 0 };
     let added = 0, skipped = 0;
+    const dropped = [];
+    const toMin = (s) => { const [h, m] = String(s).split(":").map(Number); return h * 60 + (m || 0); };
     tpl.items.forEach((it) => {
-      const dur = parseHM(it.endTime) - parseHM(it.startTime);
+      const dur = toMin(it.endTime) - toMin(it.startTime);
       let start = it.startTime, end = it.endTime;
       let guard = 0;
       while (guard++ < 48) {
         const conflict = Store.state.schedule.some((x) => (x.date || todayStr()) === toDate && x.startTime < end && x.endTime > start);
         if (!conflict) break;
-        const [h, m] = start.split(":").map(Number);
-        let nm = m + 30, nh = h; if (nm >= 60) { nm -= 60; nh += 1; }
-        start = pad(nh) + ":" + pad(nm);
-        const [eh, em] = end.split(":").map(Number);
-        let nem = em + 30, neh = eh; if (nem >= 60) { nem -= 60; neh += 1; }
-        end = pad(neh) + ":" + pad(nem);
+        // 顺延 30 分钟，且确保不越过当天 23:59（越界即放不下，杜绝 25 点/26 点）
+        const sM = toMin(start), eM = toMin(end);
+        if (sM + 30 > 1439 || eM + 30 > 1439) { start = ""; break; }
+        const f = (m) => `${pad(Math.floor(m / 60))}:${pad(m % 60)}`;
+        start = f(sM + 30);
+        end = f(eM + 30);
       }
+      if (!start || !isTimeValid(start) || !isTimeValid(end)) { dropped.push(it.title); return; }
       const dup = Store.state.schedule.find((x) => (x.date || todayStr()) === toDate && x.title === it.title && x.startTime === start);
       if (dup) { skipped++; return; }
       Store.addSchedule({ title: it.title, date: toDate, startTime: start, endTime: end, tag: it.tag, tagColor: it.tagColor, priority: it.priority || "中", desc: it.desc || "", isCompleted: false, repeat: "none" });
       added++;
     });
     Store.notify();
-    return { added, skipped };
+    return { added, skipped, dropped };
   }
   // 模板套用/保存的目标日期：跟随当前查看的日期（day 视图取 anchor；周/月视图按用户可理解的处理当天）
   function tplTargetDate() {
@@ -5315,7 +5328,8 @@ ${scheduleContext(Store.state.prefs.chatMemory === "custom" ? { from: Store.stat
             list.querySelectorAll("[data-tpl-apply]").forEach((b) => b.addEventListener("click", () => {
               const r = applyTemplate(b.dataset.tplApply, tplTargetDate());
               const nm = (listTemplates().find((x) => x.id === b.dataset.tplApply) || {}).name || "";
-              toast(`已套用「${nm}」到${scope.mode === "day" ? humanDateLabel(scope.anchor) : "今日"}：${r.added} 项，跳过 ${r.skipped} 项冲突`, "ok");
+              const dropNote = r.dropped && r.dropped.length ? `；放不下 ${r.dropped.length} 项（${r.dropped.slice(0, 3).map((x) => `「${x}」`).join("、")}${r.dropped.length > 3 ? " 等" : ""}，建议顺延到明天）` : "";
+              toast(`已套用「${nm}」到${scope.mode === "day" ? humanDateLabel(scope.anchor) : "今日"}：${r.added} 项，跳过 ${r.skipped} 项冲突${dropNote}`, r.dropped && r.dropped.length ? "warn" : "ok");
               closeSheet(); renderCurrent();
             }));
             list.querySelectorAll("[data-tpl-del]").forEach((b) => b.addEventListener("click", () => {
